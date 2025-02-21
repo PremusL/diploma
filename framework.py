@@ -50,15 +50,15 @@ class DiplomaDataset():
     def tokenize_function(self, element):
         return self.tokenizer(element, padding="max_length", truncation=True)
 
-    def prepare_data(self, num_examples_train=3000, num_examples_test=1000, class_count=2):
+    def prepare_data(self, num_examples_train=3000, num_examples_test=1000, class_count=2, batch_size=24):
         selected_train = self.select_examples(self.data_train, num_examples=num_examples_train, class_count=class_count)
         selected_test = self.select_examples(self.data_test, num_examples=num_examples_test, class_count=class_count)
 
         dataset_train = ContentDataset(selected_train['content'], selected_train['label'], self.tokenizer)
         dataset_test = ContentDataset(selected_test['content'], selected_test['label'], self.tokenizer)
 
-        self.train_dataloader = DataLoader(dataset_train, shuffle=True, batch_size=14)
-        self.test_dataloader = DataLoader(dataset_test, shuffle=True, batch_size=14)
+        self.train_dataloader = DataLoader(dataset_train, shuffle=True, batch_size=batch_size)
+        self.test_dataloader = DataLoader(dataset_test, shuffle=True, batch_size=batch_size)
 
         return self.train_dataloader, self.test_dataloader
 
@@ -95,7 +95,7 @@ class DiplomaTrainer():
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-5)
         for epoch in range(epochs):
             print(f'EPOCH: {epoch}')
-            for batch in tqdm.tqdm(self.train_dataloader):
+            for i, batch in enumerate(tqdm.tqdm(self.train_dataloader)):
                 optimizer.zero_grad()
                 input_ids, attention_mask, labels = batch
                 input_ids = input_ids.to(device=self.device)
@@ -105,14 +105,17 @@ class DiplomaTrainer():
                 loss = outputs.loss
                 loss.backward()
                 optimizer.step()
+                if i % 10 == 0:
+                    mid_result = self.evaluate()
+                    print(mid_result['accuracy'].item())
         return self.model
 
     def save_model(self, path):
-        os.makedirs('./saved_models', exist_ok=True)
-        torch.save(self.model, './saved_models' + path)
+        os.makedirs('../saved_models', exist_ok=True)
+        torch.save(self.model, '../saved_models' + path)
 
     def load_model(self, path):
-        self.model = torch.load(path)
+        self.model = torch.load(path, weights_only=False)
         return self.model
 
     def accuracy(self, predictions, labels):
@@ -137,7 +140,6 @@ class DiplomaTrainer():
             
         all_predictions = all_predictions
         all_labels = all_labels
-        print(len(all_predictions))
         result['accuracy'] = self.accuracy(all_predictions, all_labels)
         return result
     
@@ -146,7 +148,6 @@ class DiplomaTrainer():
 
 
     
-
 
 
 

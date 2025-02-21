@@ -1,18 +1,15 @@
 from framework import *
 
 tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-dataDiploma = DiplomaDataset('data/train.csv', 'data/test.csv', tokenizer=tokenizer)
-# print(examples.head(), examples.shape)
+dataDiploma = DiplomaDataset('./data/train.csv', './data/test.csv', tokenizer=tokenizer)
 
-dataLoader_train, dataLoader_test = dataDiploma.prepare_data(num_examples_train=200, num_examples_test=200, class_count=2)
+num_training_examples = 200
 
-
-model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=2)
-
-trainer = DiplomaTrainer(None, dataLoader_train, dataLoader_test)
-trainer.load_model("./saved_models/bert_1000_C2_3E")
-# trainer.train(epochs=3)
-result = trainer.evaluate()
-trainer.save_model('/bert_1000_C2_3E')
-print(result)
+for num_classes in range(2, 3):
+    dataLoader_train, dataLoader_test = dataDiploma.prepare_data(num_examples_train=num_training_examples, num_examples_test=1000, class_count=num_classes)
+    model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=num_classes)
+    trainer = DiplomaTrainer(model, dataLoader_train, dataLoader_test)
+    trainer.train(epochs=4)
+    result = trainer.evaluate()
+    trainer.save_model(f'/bert_{num_training_examples}_C{num_classes}_4E_test')
 
