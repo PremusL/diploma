@@ -10,7 +10,7 @@ dataLoader_train, dataLoader_test = dataDiploma.prepare_data(num_examples_train=
 model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=2)
 
 trainer = DiplomaTrainer(None, dataLoader_train, dataLoader_test)
-trainer.load_model(".")
+trainer.load_model("./saved_models/bert_1000_C2_3E")
 # trainer.train(epochs=3)
 result = trainer.evaluate()
 trainer.save_model('/bert_1000_C2_3E')
