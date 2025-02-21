@@ -90,6 +90,7 @@ class DiplomaTrainer():
         print(f"Model: {self.model}")
 
     def train(self,epochs=3):
+        validation_results = torch.tensor([0]).to(device=self.device)
         self.model.to(device=self.device)
         self.model.train()
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=2e-5)
@@ -105,9 +106,18 @@ class DiplomaTrainer():
                 loss = outputs.loss
                 loss.backward()
                 optimizer.step()
-                if i % 10 == 0:
+                if i % math.ceil(len(self.train_dataloader) / 2) == 0:
                     mid_result = self.evaluate()
-                    print(mid_result['accuracy'].item())
+                    validation_results = torch.cat((validation_results, mid_result['accuracy'].unsqueeze(0)))
+                    print(validation_results)
+                    print("\nValidation accuracy "+str(mid_result['accuracy'].item()))
+
+                    val_len = len(validation_results)
+                    if val_len > 3\
+                        and abs(validation_results[-3:][2] - validation_results[-3:][1]) < 0.05\
+                        and abs(validation_results[-3:][0] - validation_results[-3:][1]) < 0.05:
+                        print('\nModel is not learning anymore')
+                        return self.model
         return self.model
 
     def save_model(self, path):
