@@ -51,14 +51,15 @@ class DiplomaDataset():
         return self.tokenizer(element, padding="max_length", truncation=True)
 
     def prepare_data(self, num_examples_train=3000, num_examples_test=1000, class_count=2, batch_size=24):
-        selected_train = self.select_examples(self.data_train, num_examples=num_examples_train, class_count=class_count)
         selected_test = self.select_examples(self.data_test, num_examples=num_examples_test, class_count=class_count)
-
-        dataset_train = ContentDataset(selected_train['content'], selected_train['label'], self.tokenizer)
         dataset_test = ContentDataset(selected_test['content'], selected_test['label'], self.tokenizer)
-
-        self.train_dataloader = DataLoader(dataset_train, shuffle=True, batch_size=batch_size)
         self.test_dataloader = DataLoader(dataset_test, shuffle=True, batch_size=batch_size)
+        self.train_dataloader = None
+
+        if num_examples_train is not None and num_examples_train > 0:
+            selected_train = self.select_examples(self.data_train, num_examples=num_examples_train, class_count=class_count)
+            dataset_train = ContentDataset(selected_train['content'], selected_train['label'], self.tokenizer)
+            self.train_dataloader = DataLoader(dataset_train, shuffle=True, batch_size=batch_size)
 
         return self.train_dataloader, self.test_dataloader
 
@@ -82,6 +83,8 @@ class DiplomaTrainer():
     
     def __init__(self, model, train_dataloader, test_dataloader, device="cuda" if torch.cuda.is_available() else "cpu"):
         self.model = model
+        self.model_static_q = None
+        self.model_dynamic_q = None
         self.train_dataloader = train_dataloader
         self.test_dataloader = test_dataloader
         self.device = device
@@ -119,13 +122,20 @@ class DiplomaTrainer():
                         print('\nModel is not learning anymore')
                         return self.model
         return self.model
+    
+    def set_model(self, model):
+        self.model = model
 
-    def save_model(self, path):
+    def save_model(self, name):
         os.makedirs('../saved_models', exist_ok=True)
-        torch.save(self.model, '../saved_models' + path)
+        torch.save(self.model, '../saved_models/' + name)
 
-    def load_model(self, path):
-        self.model = torch.load(path, weights_only=False)
+    def load_model(self, path, bertLike=False):
+        if bertLike: # Se ne dela
+            self.model = BertForSequenceClassification.from_pretrained(path)
+        else:
+            self.model = torch.load(path, weights_only=False)
+
         return self.model
 
     def accuracy(self, predictions, labels):
@@ -142,17 +152,42 @@ class DiplomaTrainer():
             input_ids = input_ids.to(device=self.device)
             attention_mask = attention_mask.to(device=self.device)
             labels = labels.to(device=self.device)
-            outputs = self.model(input_ids, attention_mask=attention_mask, labels=labels)
+            outputs = self.model(input_ids, attention_mask)
             prediction = outputs.logits.argmax(dim=-1)
 
             all_predictions = torch.cat((all_predictions, prediction))
             all_labels = torch.cat((all_labels, labels))
             
         all_predictions = all_predictions
-        all_labels = all_labels
         result['accuracy'] = self.accuracy(all_predictions, all_labels)
         return result
     
+    def quantize_dynamic(self, inplace=False):
+        self.model.eval()
+        self.model_dynamic_q = torch.quantization.quantize_dynamic(
+        self.model,
+        {torch.nn.Linear},
+        inplace=inplace,
+        dtype=torch.qint8)
+
+        return self.model_dynamic_q
+    
+    def quantize_static(self, inplace=False):
+        self.model.eval()
+        torch.quantization.quantize(self.model, )
+        self.model.qconfig = torch.ao.quantization.get_default_qconfig('x86')
+        fused_model = torch.ao.quantization.fuse_modules(self.model, [['gelu', 'relu']])
+        model_fp32_prepared = torch.ao.quantization.prepare(fused_model)
+        self.model_static_q = torch.ao.quantization.convert(model_fp32_prepared)
+        if inplace: self.model = self.model_static_q
+
+        return self.model_static_q
+
+
+
+
+    
+        
 
 
 
