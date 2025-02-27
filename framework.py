@@ -123,6 +123,10 @@ class DiplomaTrainer():
                         return self.model
         return self.model
     
+    
+    def get_device(self):
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    
     def set_model(self, model):
         self.model = model
 
@@ -131,10 +135,10 @@ class DiplomaTrainer():
         torch.save(self.model, '../saved_models/' + name)
 
     def load_model(self, path, bertLike=False):
-        if bertLike: # Se ne dela
-            self.model = BertForSequenceClassification.from_pretrained(path)
-        else:
-            self.model = torch.load(path, weights_only=False)
+        # if bertLike: # Se ne dela
+        #     self.model = torch.load("../quantized_model_bert10000_full.pth", weights_only=False) # se zamenja
+        # else:
+        self.model = torch.load(path, weights_only=False)
 
         return self.model
 
@@ -142,6 +146,7 @@ class DiplomaTrainer():
         return torch.sum(predictions == labels) / len(labels)
 
     def evaluate(self):
+        self.device = self.get_device()
         self.model.eval()
         self.model.to(device=self.device)
         all_predictions = torch.tensor([]).to(device=self.device)
@@ -167,17 +172,31 @@ class DiplomaTrainer():
         self.model_dynamic_q = torch.quantization.quantize_dynamic(
         self.model,
         {torch.nn.Linear},
-        inplace=inplace,
+        inplace=True,
         dtype=torch.qint8)
 
         return self.model_dynamic_q
     
+    def print_size_of_model(model):
+        torch.save(model.state_dict(), "./temp/temp_delme.p")
+        print('Size (KB):', os.path.getsize("./temp/temp_delme.p")/1e3)
+        os.remove('./temp/temp_delme.p')
+    
     def quantize_static(self, inplace=False):
+        self.model.to('cpu')
         self.model.eval()
-        torch.quantization.quantize(self.model, )
-        self.model.qconfig = torch.ao.quantization.get_default_qconfig('x86')
-        fused_model = torch.ao.quantization.fuse_modules(self.model, [['gelu', 'relu']])
-        model_fp32_prepared = torch.ao.quantization.prepare(fused_model)
+        self.model.qconfig = torch.ao.quantization.get_default_qconfig('qnnpack')
+        torch.backends.quantized.engine = 'qnnpack'
+
+
+        for name, module in self.model.named_modules():
+            if isinstance(module, torch.nn.Embedding):
+                module.qconfig = torch.quantization.float_qparams_weight_only_qconfig
+
+        # fused_model = torch.ao.quantization.fuse_modules(self.model, [['relu']])
+        model_fp32_prepared = torch.ao.quantization.prepare(self.model, inplace=inplace)
+        self.evaluate()
+        self.model.to(device='cpu')
         self.model_static_q = torch.ao.quantization.convert(model_fp32_prepared)
         if inplace: self.model = self.model_static_q
 
