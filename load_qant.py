@@ -8,14 +8,17 @@ model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_l
 trainer = DiplomaTrainer(model, dataLoader_train, dataLoader_test, device='cpu')
 
 trainer.load_model("../saved_models/bert_4000_C2_4E_test", True)
+trainer.print_size_of_model()
 model_quantized_dynamic = trainer.quantize_static(inplace=True)
 trainer.save_model("static_quantized_bert_4000_c2_4e")
-trainer.about()
+# trainer.about()
 
-trainer.load_model("../saved_models/bert_4000_C2_4E_test", True)
+trainer.load_model("../saved_models/static_quantized_bert_4000_c2_4e", True)
 results = trainer.evaluate()
 
 print(results['accuracy'].item())
+
+trainer.print_size_of_model()
 
 
 

@@ -146,7 +146,7 @@ class DiplomaTrainer():
         return torch.sum(predictions == labels) / len(labels)
 
     def evaluate(self):
-        self.device = self.get_device()
+        # self.device = self.get_device()
         self.model.eval()
         self.model.to(device=self.device)
         all_predictions = torch.tensor([]).to(device=self.device)
@@ -177,9 +177,10 @@ class DiplomaTrainer():
 
         return self.model_dynamic_q
     
-    def print_size_of_model(model):
-        torch.save(model.state_dict(), "./temp/temp_delme.p")
-        print('Size (KB):', os.path.getsize("./temp/temp_delme.p")/1e3)
+    def print_size_of_model(self):
+        os.makedirs("./temp", exist_ok=True)
+        torch.save(self.model.state_dict(), "./temp/temp_delme.p")
+        print('Size (MB):', os.path.getsize("./temp/temp_delme.p")/1e6)
         os.remove('./temp/temp_delme.p')
     
     def quantize_static(self, inplace=False):
