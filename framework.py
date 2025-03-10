@@ -1,6 +1,7 @@
 import torch
 import pandas as pd
-from transformers import BertTokenizer, BertForSequenceClassification, Trainer, TrainingArguments
+import torch.ao.quantization
+from transformers import BertTokenizer, BertForSequenceClassification, Trainer, TrainingArguments, BertModel
 import os
 from torch.utils.data import DataLoader, Dataset
 import tqdm
@@ -8,11 +9,46 @@ from typing import Dict, List
 import numpy as np
 import math
 from enum import Enum
-
-
+# from neural_compressor.quantization import fit
+# from neural_compressor.config import PostTrainingQuantConfig, TuningCriterion
+from dataclasses import dataclass
+from typing import Optional, Tuple
 class Device(Enum):
     CUDA = "cuda",
     CPU =  "cpu"
+
+@dataclass
+class QuantOutput():
+    loss: Optional[torch.FloatTensor] = None
+    logits: torch.FloatTensor = None
+    hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+    attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
+
+class BertQuant(BertForSequenceClassification):
+    def __init__(self, bertModel, config):
+        super(BertForSequenceClassification, self).__init__(config)
+        self.bertModel = bertModel
+        self.quantStub = torch.quantization.QuantStub()
+        self.dequantStub = torch.quantization.DeQuantStub()
+
+    def forward(self, input_ids, attention_mask=None, token_type_ids=None, **kwargs):
+        input_ids = self.quantStub(input_ids)
+        if attention_mask is not None:
+            attention_mask = self.quantStub(attention_mask)
+        if token_type_ids is not None:
+            token_type_ids = self.quantStub(token_type_ids)
+
+        outputs = self.bertModel(input_ids, attention_mask)
+
+        outputs.logits = self.dequantStub(outputs.logits)
+
+        return QuantOutput(
+            loss=outputs.loss,
+            logits=outputs.logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
 
 class ContentDataset(Dataset):
     def __init__(self, data, labels, tokenizer, max_length=128, batch_size=14):
@@ -134,11 +170,12 @@ class DiplomaTrainer():
         os.makedirs('../saved_models', exist_ok=True)
         torch.save(self.model, '../saved_models/' + name)
 
-    def load_model(self, path, bertLike=False):
+    def load_model(self, path, config, bertLike=False):
         # if bertLike: # Se ne dela
         #     self.model = torch.load("../quantized_model_bert10000_full.pth", weights_only=False) # se zamenja
         # else:
         self.model = torch.load(path, weights_only=False)
+        self.model = BertQuant(self.model, config=config)
 
         return self.model
 
@@ -147,6 +184,7 @@ class DiplomaTrainer():
 
     def evaluate(self):
         # self.device = self.get_device()
+        self.model.to('cpu')
         self.model.eval()
         self.model.to(device=self.device)
         all_predictions = torch.tensor([]).to(device=self.device)
@@ -158,7 +196,9 @@ class DiplomaTrainer():
             attention_mask = attention_mask.to(device=self.device)
             labels = labels.to(device=self.device)
             outputs = self.model(input_ids, attention_mask)
+
             prediction = outputs.logits.argmax(dim=-1)
+            # print(f'prediction {prediction}')
 
             all_predictions = torch.cat((all_predictions, prediction))
             all_labels = torch.cat((all_labels, labels))
@@ -186,33 +226,34 @@ class DiplomaTrainer():
     def quantize_static(self, inplace=False):
         self.model.to('cpu')
         self.model.eval()
-        self.model.qconfig = torch.ao.quantization.get_default_qconfig('qnnpack')
-        torch.backends.quantized.engine = 'qnnpack'
-
+        self.model.qconfig = torch.ao.quantization.get_default_qconfig('fbgemm')
+        # torch.backends.quantized.engine = 'fbgemm'
 
         for name, module in self.model.named_modules():
-            if isinstance(module, torch.nn.Embedding):
-                module.qconfig = torch.quantization.float_qparams_weight_only_qconfig
+            if isinstance(module, torch.nn.Embedding) or isinstance(module, torch.nn.LayerNorm):
+                module.qconfig = None
 
+        torch.ao.quantization.fuse_modules(self.model, [['model.bert.encoder.layer.0.attention.self.query', 'model.bert.encoder.layer.0.attention.self.key']], inplace=True)
         # fused_model = torch.ao.quantization.fuse_modules(self.model, [['relu']])
         model_fp32_prepared = torch.ao.quantization.prepare(self.model, inplace=inplace)
         self.evaluate()
-        self.model.to(device='cpu')
+        # self.model.to(device='cpu')
         self.model_static_q = torch.ao.quantization.convert(model_fp32_prepared)
+        # self.about()
         if inplace: self.model = self.model_static_q
 
-        return self.model_static_q
+        # print(torch.int_repr(self.model.classifier.weight()))
+
+
+        # for name, param in self.model_static_q.named_parameters():
+        #     if not param.is_contiguous():
+        #         print(f"Parameter {name} is not contiguous after conversion!")
+        #         param.data = param.data.contiguous()
 
 
 
+        return self.model_static_q        
 
-    
-        
-
-
-
-
-    
 
 
 
