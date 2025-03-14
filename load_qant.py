@@ -21,13 +21,20 @@ model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_l
 config = BertModel.from_pretrained('bert-base-uncased').config
 trainer = DiplomaTrainer(model, dataLoader_train, dataLoader_test, device='cpu')
 
-trainer.load_model("../saved_models/bert_4000_C2_4E_test", config, True)
-results = trainer.evaluate()
 
-print(results['accuracy'].item())
+# trainer.onnx_quantize()
+
+# trainer.load_model("../saved_models/bert_4000_C2_4E_test", config, True)
+
+trainer.inference()
+# trainer.onnx_quantize()
+# results = trainer.evaluate()
+
+# print(results['accuracy'].item())
 
 # trainer.print_size_of_model()
 
+#! trainer.onnx_export()
 # model_quantized_static = trainer.quantize_static(inplace=True)
 
 # trainer.save_model("static_quantized_bert_4000_c2_4e_test")
@@ -40,12 +47,3 @@ print(results['accuracy'].item())
 # print(results['accuracy'].item())
 
 # trainer.print_size_of_model()
-
-
-
-
-# model_loaded = torch.load("../saved_models/static_quantized_bert_4000_c2_4e_test", weights_only=False)
-# model_loaded = torch.load("../model_static_quantization_full.pth", weights_only=False)
-
-
-# trainer_static_quantized.evaluate()

@@ -13,9 +13,27 @@ from enum import Enum
 # from neural_compressor.config import PostTrainingQuantConfig, TuningCriterion
 from dataclasses import dataclass
 from typing import Optional, Tuple
+from onnxruntime.quantization import quantize_static, QuantType, CalibrationDataReader, quantize_dynamic, QuantFormat
+from optimum.onnxruntime import ORTQuantizer, ORTModelForSequenceClassification
+from optimum.onnxruntime.configuration import AutoQuantizationConfig
+import onnx
+import onnxruntime as ort
+
+
 class Device(Enum):
     CUDA = "cuda",
     CPU =  "cpu"
+
+
+class BertCalibrationDataReader(CalibrationDataReader):
+    def __init__(self, data_gen):
+        self.data_gen = data_gen
+        self.enum_data = None
+
+    def get_next(self):
+        if self.enum_data is None:
+            self.enum_data = iter(self.data_gen())
+        return next(self.enum_data, None)
 
 @dataclass
 class QuantOutput():
@@ -28,27 +46,26 @@ class BertQuant(BertForSequenceClassification):
     def __init__(self, bertModel, config):
         super(BertForSequenceClassification, self).__init__(config)
         self.bertModel = bertModel
-        self.quantStub = torch.quantization.QuantStub()
-        self.dequantStub = torch.quantization.DeQuantStub()
+        self.quant = torch.quantization.QuantStub()
+        self.dequant = torch.quantization.DeQuantStub()
 
     def forward(self, input_ids, attention_mask=None, token_type_ids=None, **kwargs):
-        input_ids = self.quantStub(input_ids)
-        if attention_mask is not None:
-            attention_mask = self.quantStub(attention_mask)
+        input_ids = self.quant(input_ids)
+
+        # if attention_mask is not None:
+        #     attention_mask = self.quant(attention_mask)
+
         if token_type_ids is not None:
-            token_type_ids = self.quantStub(token_type_ids)
+            token_type_ids = self.quant(token_type_ids)
 
         outputs = self.bertModel(input_ids, attention_mask)
 
-        outputs.logits = self.dequantStub(outputs.logits)
-
         return QuantOutput(
             loss=outputs.loss,
-            logits=outputs.logits,
+            logits=self.dequant(outputs.logits),
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
-
 
 class ContentDataset(Dataset):
     def __init__(self, data, labels, tokenizer, max_length=128, batch_size=14):
@@ -90,6 +107,7 @@ class DiplomaDataset():
         selected_test = self.select_examples(self.data_test, num_examples=num_examples_test, class_count=class_count)
         dataset_test = ContentDataset(selected_test['content'], selected_test['label'], self.tokenizer)
         self.test_dataloader = DataLoader(dataset_test, shuffle=True, batch_size=batch_size)
+        print(dataset_test.data)
         self.train_dataloader = None
 
         if num_examples_train is not None and num_examples_train > 0:
@@ -175,12 +193,15 @@ class DiplomaTrainer():
         #     self.model = torch.load("../quantized_model_bert10000_full.pth", weights_only=False) # se zamenja
         # else:
         self.model = torch.load(path, weights_only=False)
-        self.model = BertQuant(self.model, config=config)
+        # self.model = BertQuant(self.model, config=config)
 
         return self.model
 
     def accuracy(self, predictions, labels):
         return torch.sum(predictions == labels) / len(labels)
+    
+    def accuracy_numpy(self, predictions, labels):
+        return np.sum(predictions == labels) / len(labels)
 
     def evaluate(self):
         # self.device = self.get_device()
@@ -233,14 +254,13 @@ class DiplomaTrainer():
             if isinstance(module, torch.nn.Embedding) or isinstance(module, torch.nn.LayerNorm):
                 module.qconfig = None
 
-        torch.ao.quantization.fuse_modules(self.model, [['model.bert.encoder.layer.0.attention.self.query', 'model.bert.encoder.layer.0.attention.self.key']], inplace=True)
-        # fused_model = torch.ao.quantization.fuse_modules(self.model, [['relu']])
+
+        # # fused_model = torch.ao.quantization.fuse_modules(self.model, [['relu']])
         model_fp32_prepared = torch.ao.quantization.prepare(self.model, inplace=inplace)
         self.evaluate()
-        # self.model.to(device='cpu')
-        self.model_static_q = torch.ao.quantization.convert(model_fp32_prepared)
-        # self.about()
-        if inplace: self.model = self.model_static_q
+        # self.model_static_q = torch.ao.quantization.convert(model_fp32_prepared)
+        # # self.about()
+        # if inplace: self.model = self.model_static_q
 
         # print(torch.int_repr(self.model.classifier.weight()))
 
@@ -252,12 +272,87 @@ class DiplomaTrainer():
 
 
 
-        return self.model_static_q        
+        return self.model_static_q
+    
+    def onnx_export(self):
+        input_ids, attention_mask = None, None
+        for batch in self.test_dataloader:
+            input_ids, attention_mask, labels = batch
+            print(f"shape: {input_ids.shape}")
+            print(f"shape: {attention_mask.shape}")
+            print(f"shape: {labels.shape}")
+            break
+
+        dummy_input = torch.randint(0, 10000, (1, 128))
+                
+        # print(training_data_size)
+        self.model.to("cpu")
+
+        torch.onnx.export(
+        self.model,                                           # model being run
+        (input_ids, attention_mask),                     # model inputs (tuple)
+        "bert_model.onnx",                               # output file
+        input_names=['input_ids', 'attention_mask'],     # input names
+        output_names=['last_hidden_state'], # output names
+        dynamic_axes={
+            'input_ids': {0: 'batch_size', 1: 'sequence_length'},
+            'attention_mask': {0: 'batch_size', 1: 'sequence_length'},
+            'last_hidden_state': {0: 'batch_size', 1: 'sequence_length'},
+            'pooler_output': {0: 'batch_size'}
+            },
+            opset_version=14                                 # use appropriate opset
+        )
+
+    def calibration_data_reader(self):
+        for _ in range(10):  # Use more samples in practice!
+            yield {
+                'input_ids': np.random.randint(0, 100, size=(1, 128)).astype(np.int64),
+                'attention_mask': np.ones((1, 128), dtype=np.int64)
+            }
 
 
+    def onnx_quantize(self):
+        onnx_model = onnx.load("bert_model.onnx")
+        onnx.checker.check_model(onnx_model)
+        print("ONNX model is valid!")
+        
+        model_path = './bert_model.onnx'
+        model_quantized_path = './bert_quantized_model.onnx'
+        model_quantized_static_path = './bert_quantized_static_model.onnx'
 
+        calibration_data = [{"input_ids": input_ids, "attention_mask": attention_mask} for input_ids, attention_mask, _ in self.test_dataloader ]
 
+        # onnx_model = onnx.load(model_path)
+        # onnx.checker.check_model(onnx_model)
+        # quantizer = ORTQuantizer.from_pretrained(model_path)
+        calibration_reader = BertCalibrationDataReader(self.calibration_data_reader)
+        quantize_static(
+            model_input=model_path,
+            model_output=model_quantized_static_path,
+            calibration_data_reader=calibration_reader,
+            quant_format=QuantFormat.QDQ,     # QDQ is recommended, alternatively QuantFormat.QOperator
+            activation_type=QuantType.QInt8,
+            weight_type=QuantType.QInt8
+        )
+    def inference(self):
+        model_quantized_static_path = './bert_quantized_static_model.onnx'
+        session = ort.InferenceSession(model_quantized_static_path)
 
+        inputs = [{"input_ids": input_ids.numpy(), "attention_mask": attention_mask.numpy(), "labels": labels.numpy() } for input_ids, attention_mask, labels in self.test_dataloader ]
+
+        input_dict = {
+            "input_ids": inputs[0]["input_ids"],
+            "attention_mask": inputs[0]["attention_mask"]
+        }
+        # print(type(inputs[0]), inputs[0].keys(), inputs[0].values())
+        output = session.run(None, input_dict)
+        
+        output = np.array(output[0]).argmax(axis=1)
+
+        print(output, inputs[0]['labels'])
+        print(self.accuracy_numpy(output, inputs[0]['labels']))
+
+# calibration_data_reader = BertCalibrationDataReader(calibration_data)
 
 
 
