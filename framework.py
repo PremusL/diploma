@@ -29,11 +29,16 @@ class BertCalibrationDataReader(CalibrationDataReader):
     def __init__(self, data_gen):
         self.data_gen = data_gen
         self.enum_data = None
+        self.counter = 0
 
     def get_next(self):
+        self.counter += 1
+
         if self.enum_data is None:
             self.enum_data = iter(self.data_gen())
-        return next(self.enum_data, None)
+        data = next(self.enum_data, None)
+
+        return data
 
 @dataclass
 class QuantOutput():
@@ -107,7 +112,6 @@ class DiplomaDataset():
         selected_test = self.select_examples(self.data_test, num_examples=num_examples_test, class_count=class_count)
         dataset_test = ContentDataset(selected_test['content'], selected_test['label'], self.tokenizer)
         self.test_dataloader = DataLoader(dataset_test, shuffle=True, batch_size=batch_size)
-        print(dataset_test.data)
         self.train_dataloader = None
 
         if num_examples_train is not None and num_examples_train > 0:
@@ -134,7 +138,8 @@ class DiplomaDataset():
         return output_data
 
 class DiplomaTrainer():
-    
+    BASE_PATH_ONNX = '../saved_onnx/'
+
     def __init__(self, model, train_dataloader, test_dataloader, device="cuda" if torch.cuda.is_available() else "cpu"):
         self.model = model
         self.model_static_q = None
@@ -303,54 +308,84 @@ class DiplomaTrainer():
             opset_version=14                                 # use appropriate opset
         )
 
+    def onnx_check_model(self, model_name):
+        model_path = self.BASE_PATH_ONNX + model_name
+        onnx.checker.check_model(onnx.load(model_path))
+        print("ONNX model is valid!")    
+
     def calibration_data_reader(self):
-        for _ in range(10):  # Use more samples in practice!
-            yield {
-                'input_ids': np.random.randint(0, 100, size=(1, 128)).astype(np.int64),
-                'attention_mask': np.ones((1, 128), dtype=np.int64)
-            }
+        for data in self.gen_data_reader():
+            yield data
 
 
-    def onnx_quantize(self):
-        onnx_model = onnx.load("bert_model.onnx")
-        onnx.checker.check_model(onnx_model)
-        print("ONNX model is valid!")
+    def gen_data_reader(self, add_labels=False, input_size=128):
+        for input_ids, attention_masks, labels in self.test_dataloader:  
+            for input_id, attention_mask, label in zip(input_ids, attention_masks, labels):
+                data = {
+                    'input_ids': input_id.numpy().reshape((1, input_size)),
+                    'attention_mask': attention_mask.numpy().reshape((1, input_size))
+                }
+                if add_labels:
+                    data['labels'] = label.numpy().reshape((1, 1))
+                yield data
+
+
+    def onnx_quantize_static(self, model_name, model_quantized_name):
         
-        model_path = './bert_model.onnx'
-        model_quantized_path = './bert_quantized_model.onnx'
-        model_quantized_static_path = './bert_quantized_static_model.onnx'
-
-        calibration_data = [{"input_ids": input_ids, "attention_mask": attention_mask} for input_ids, attention_mask, _ in self.test_dataloader ]
-
-        # onnx_model = onnx.load(model_path)
-        # onnx.checker.check_model(onnx_model)
-        # quantizer = ORTQuantizer.from_pretrained(model_path)
+        model_path = self.BASE_PATH_ONNX + model_name
+        model_quantized_path = self.BASE_PATH_ONNX + model_quantized_name
         calibration_reader = BertCalibrationDataReader(self.calibration_data_reader)
+
         quantize_static(
             model_input=model_path,
-            model_output=model_quantized_static_path,
+            model_output=model_quantized_path,
             calibration_data_reader=calibration_reader,
             quant_format=QuantFormat.QDQ,     # QDQ is recommended, alternatively QuantFormat.QOperator
             activation_type=QuantType.QInt8,
             weight_type=QuantType.QInt8
         )
-    def inference(self):
-        model_quantized_static_path = './bert_quantized_static_model.onnx'
-        session = ort.InferenceSession(model_quantized_static_path)
 
-        inputs = [{"input_ids": input_ids.numpy(), "attention_mask": attention_mask.numpy(), "labels": labels.numpy() } for input_ids, attention_mask, labels in self.test_dataloader ]
+    def onnx_quantize_dynamic(self, model_name, model_quantized_name):
+        model_path = self.BASE_PATH_ONNX + model_name
+        model_quantized_path = self.BASE_PATH_ONNX + model_quantized_name
 
-        input_dict = {
-            "input_ids": inputs[0]["input_ids"],
-            "attention_mask": inputs[0]["attention_mask"]
-        }
-        # print(type(inputs[0]), inputs[0].keys(), inputs[0].values())
-        output = session.run(None, input_dict)
+        quantize_dynamic(
+            model_input=model_path,
+            model_output=model_quantized_path,
+            weight_type=QuantType.QInt8
+        )
+
+    def evaluation_onnx(self, model_name, eval_len=None):
+        if eval_len == None:
+            eval_len = len(self.test_dataloader)
+        model_path = self.BASE_PATH_ONNX + model_name
+        session = ort.InferenceSession(model_path)
+
+        # inputs = [{"input_ids": input_ids.numpy(), "attention_mask": attention_mask.numpy(), "labels": labels.numpy() } for input_ids, attention_mask, labels in self.test_dataloader ]
         
-        output = np.array(output[0]).argmax(axis=1)
+        input_gen = iter(self.gen_data_reader(add_labels=True))
 
-        print(output, inputs[0]['labels'])
-        print(self.accuracy_numpy(output, inputs[0]['labels']))
+        results = np.array([])
+        labels = np.array([])
+        data = next(input_gen, None)
+        while data != None:
+            curr_data = {
+                'input_ids': np.array(data['input_ids']),
+                'attention_mask': np.array(data['attention_mask'])
+            }
+            output = session.run(None, curr_data)
+            results = np.append(results, np.array(output[0]).argmax(axis=1))
+            labels = np.append(labels, data['labels'])
+            data = next(input_gen, None)
+        
+        # print(results, labels)
+        accuracy = self.accuracy_numpy(results, labels)
+        print(accuracy)
+
+        return accuracy
+        # output = np.array(output[0]).argmax(axis=1)
+
+        # print(output, inputs[0]['labels'])
 
 # calibration_data_reader = BertCalibrationDataReader(calibration_data)
 

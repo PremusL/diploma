@@ -1,17 +1,4 @@
 from framework import *
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-
-def compute_metrics(p):
-    preds = p.predictions.argmax(-1)
-    labels = p.label_ids
-    # accuracy = accuracy_score(labels, preds)
-    # precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average='weighted')
-    return {
-        'accuracy': 1,
-        'precision': 1,
-        'recall': 1,
-        'f1': 1,
-    }
 
 tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
@@ -22,28 +9,18 @@ config = BertModel.from_pretrained('bert-base-uncased').config
 trainer = DiplomaTrainer(model, dataLoader_train, dataLoader_test, device='cpu')
 
 
-# trainer.onnx_quantize()
+# trainer.onnx_quantize_static('bert_model.onnx', 'burektest.onnx')
+# trainer.onnx_check_model('burektest.onnx')
 
-# trainer.load_model("../saved_models/bert_4000_C2_4E_test", config, True)
+name_dynamic = 'bert_dynamic.onnx'
+name_static = 'bert_static.onnx'
 
-trainer.inference()
-# trainer.onnx_quantize()
-# results = trainer.evaluate()
+trainer.onnx_quantize_dynamic('bert_model.onnx', name_dynamic)
+trainer.onnx_quantize_static('bert_model.onnx', name_static)
 
-# print(results['accuracy'].item())
+acc_base = trainer.evaluation_onnx('bert_model.onnx')
+acc_static = trainer.evaluation_onnx(name_static)
+acc_dynamic = trainer.evaluation_onnx(name_dynamic)
 
-# trainer.print_size_of_model()
 
-#! trainer.onnx_export()
-# model_quantized_static = trainer.quantize_static(inplace=True)
-
-# trainer.save_model("static_quantized_bert_4000_c2_4e_test")
-# # trainer.about()
-
-# trainer.load_model("../saved_models/static_quantized_bert_4000_c2_4e", True)
-# trainer.print_size_of_model()
-# results = trainer.evaluate()
-
-# print(results['accuracy'].item())
-
-# trainer.print_size_of_model()
+print(f'Base: {acc_base}, Static: {acc_static}, Dynamic: {acc_dynamic}')
