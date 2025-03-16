@@ -13,7 +13,7 @@ from enum import Enum
 # from neural_compressor.config import PostTrainingQuantConfig, TuningCriterion
 from dataclasses import dataclass
 from typing import Optional, Tuple
-from onnxruntime.quantization import quantize_static, QuantType, CalibrationDataReader, quantize_dynamic, QuantFormat
+from onnxruntime.quantization import quantize_static, QuantType, CalibrationDataReader, quantize_dynamic, QuantFormat, CalibrationMethod
 from optimum.onnxruntime import ORTQuantizer, ORTModelForSequenceClassification
 from optimum.onnxruntime.configuration import AutoQuantizationConfig
 import onnx
@@ -37,7 +37,7 @@ class BertCalibrationDataReader(CalibrationDataReader):
         if self.enum_data is None:
             self.enum_data = iter(self.data_gen())
         data = next(self.enum_data, None)
-
+        print(data)
         return data
 
 @dataclass
@@ -193,7 +193,7 @@ class DiplomaTrainer():
         os.makedirs('../saved_models', exist_ok=True)
         torch.save(self.model, '../saved_models/' + name)
 
-    def load_model(self, path, config, bertLike=False):
+    def load_model(self, path, bertLike=False):
         # if bertLike: # Se ne dela
         #     self.model = torch.load("../quantized_model_bert10000_full.pth", weights_only=False) # se zamenja
         # else:
@@ -279,24 +279,31 @@ class DiplomaTrainer():
 
         return self.model_static_q
     
-    def onnx_export(self):
-        input_ids, attention_mask = None, None
-        for batch in self.test_dataloader:
-            input_ids, attention_mask, labels = batch
-            print(f"shape: {input_ids.shape}")
-            print(f"shape: {attention_mask.shape}")
-            print(f"shape: {labels.shape}")
+    def onnx_export(self, model_name_output):
+        model_output_path = self.BASE_PATH_ONNX + model_name_output
+
+        input_id_input, attention_mask_input = None, None
+        for input_ids, attention_masks, labels in self.test_dataloader:  
+            for input_id, attention_mask, label in zip(input_ids, attention_masks, labels):
+                input_id_input = input_id.reshape((1, 128))
+                attention_mask_input = attention_mask.reshape((1, 128))
+                # print(f"shape: {input_id_input.shape}")
+                # print(f"shape: {attention_mask_input.shape}")
+                print(f"shape: {len(input_id_input)}")
+                print(f"shape: {len(attention_mask_input)}")
+                break
             break
 
-        dummy_input = torch.randint(0, 10000, (1, 128))
-                
-        # print(training_data_size)
+        # dummy_input = torch.randint(0, 10000, (1, 128))
+        # dummy_mask = torch.ones((1, 128))
+        # print(dummy_input,'\n', dummy_mask)
+        # print(training_data_size) 
         self.model.to("cpu")
 
         torch.onnx.export(
         self.model,                                           # model being run
-        (input_ids, attention_mask),                     # model inputs (tuple)
-        "bert_model.onnx",                               # output file
+        (input_id_input, attention_mask_input),                     # model inputs (tuple)
+        model_output_path,                               # output file
         input_names=['input_ids', 'attention_mask'],     # input names
         output_names=['last_hidden_state'], # output names
         dynamic_axes={
@@ -305,7 +312,7 @@ class DiplomaTrainer():
             'last_hidden_state': {0: 'batch_size', 1: 'sequence_length'},
             'pooler_output': {0: 'batch_size'}
             },
-            opset_version=14                                 # use appropriate opset
+            # opset_version=23                                 # use appropriate opset
         )
 
     def onnx_check_model(self, model_name):
@@ -313,17 +320,68 @@ class DiplomaTrainer():
         onnx.checker.check_model(onnx.load(model_path))
         print("ONNX model is valid!")    
 
-    def calibration_data_reader(self):
+    def calibration_data_reader_old(self):
         for data in self.gen_data_reader():
             yield data
+
+    def calibration_data_reader(self):
+        for _ in range(1):  # Use more samples in practice!
+            input_ids_new = np.random.randint(1, 10, size=(1, 128)).astype(np.int64)
+            # cur_cut = np.random.randint(20, 120)
+            cur_cut = 80
+            input_ids_new[:, -cur_cut:] = 0
+            input_ids_new[:, 0] = 101
+            input_ids_new[:, -cur_cut] = 102
+            attention_mask_new = np.ones((1, 128), dtype=np.int64)
+            attention_mask_new[:, -cur_cut:] = 0
+            
+            yield {
+                'input_ids': input_ids_new,
+                'attention_mask': attention_mask_new
+            }
+
+        #     yield {
+        #         'input_ids': np.array([[101,9078,  432,  184,  201,  3079,  211, 1079,  26,
+        #  1999,  8888,  2866,  1998,  42,  209,  200, 1713,  4556,
+        #  2149,  333,  6948,  2433,  2013,  4342,  2067, 1016,  34,
+        #  107,  13,  3976,  1012, 21079,  2036,  6079,  9078,  4,
+        #  802,  26,  2029,  2106,  3599,  1996,  213,  3105,  2021,
+        #  200,  249,  330,  1012,   102,     0,     0,     0,     0,
+        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
+        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
+        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
+        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
+        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
+        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
+        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
+        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
+        #     0,     0]], dtype=np.int64),
+        #         'attention_mask': np.array([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        # 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        # 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        # 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        # 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        # 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]], dtype=np.int64)
+        #     }
+
+
 
 
     def gen_data_reader(self, add_labels=False, input_size=128):
         for input_ids, attention_masks, labels in self.test_dataloader:  
             for input_id, attention_mask, label in zip(input_ids, attention_masks, labels):
+                input_arr = input_id.numpy().reshape((1, input_size)).astype(np.int64)
+                mask_arr = attention_mask.numpy().reshape((1, input_size)).astype(np.int64)
+                if not add_labels:
+                    input_arr = input_arr[input_arr > 0]
+                    input_arr = np.array([input_arr[1:len(input_arr) - 2]])
+
+                    mask_arr = mask_arr[mask_arr > 0]
+                    mask_arr = np.array([mask_arr[1:len(mask_arr) - 2]])
+
                 data = {
-                    'input_ids': input_id.numpy().reshape((1, input_size)),
-                    'attention_mask': attention_mask.numpy().reshape((1, input_size))
+                    'input_ids':  input_arr,
+                    'attention_mask':  mask_arr
                 }
                 if add_labels:
                     data['labels'] = label.numpy().reshape((1, 1))
@@ -334,7 +392,7 @@ class DiplomaTrainer():
         
         model_path = self.BASE_PATH_ONNX + model_name
         model_quantized_path = self.BASE_PATH_ONNX + model_quantized_name
-        calibration_reader = BertCalibrationDataReader(self.calibration_data_reader)
+        calibration_reader = BertCalibrationDataReader(self.calibration_data_reader_old)
 
         quantize_static(
             model_input=model_path,
@@ -342,7 +400,13 @@ class DiplomaTrainer():
             calibration_data_reader=calibration_reader,
             quant_format=QuantFormat.QDQ,     # QDQ is recommended, alternatively QuantFormat.QOperator
             activation_type=QuantType.QInt8,
-            weight_type=QuantType.QInt8
+            weight_type=QuantType.QInt8,
+            per_channel=True,
+            calibrate_method=CalibrationMethod.MinMax,
+            extra_options={
+                'OpTypesToExcludeOutputQuantization': ["LayerNormalization"],
+                'WeightSymmetric': True
+            }
         )
 
     def onnx_quantize_dynamic(self, model_name, model_quantized_name):
@@ -370,15 +434,17 @@ class DiplomaTrainer():
         data = next(input_gen, None)
         while data != None:
             curr_data = {
-                'input_ids': np.array(data['input_ids']),
-                'attention_mask': np.array(data['attention_mask'])
+                'input_ids': np.array(data['input_ids'], dtype=np.int64),
+                'attention_mask': np.array(data['attention_mask'], dtype=np.int64)
             }
+
             output = session.run(None, curr_data)
             results = np.append(results, np.array(output[0]).argmax(axis=1))
+            # print(f'data: {curr_data}, output: {output}')
             labels = np.append(labels, data['labels'])
             data = next(input_gen, None)
         
-        # print(results, labels)
+        print(results, labels)
         accuracy = self.accuracy_numpy(results, labels)
         print(accuracy)
 
