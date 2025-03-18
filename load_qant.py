@@ -16,16 +16,22 @@ name_static = 'bert_static.onnx'
 
 
 trainer.onnx_export(name_base)
+
 # trainer.onnx_check_model(name_base)
 
 # trainer.onnx_quantize_dynamic(name_base, name_dynamic)
 trainer.onnx_quantize_static(name_base, name_static)
 
 # acc_base = trainer.evaluation_onnx('bert_model.onnx')
-acc_static = trainer.evaluation_onnx(name_static)
+# acc_static = trainer.evaluation_onnx(name_static)
 # acc_base = trainer.evaluation_onnx(name_base)
 # acc_dynamic = trainer.evaluation_onnx(name_dynamic)
 
 
-print(f'Base: {1234}, Static: {acc_static}, Dynamic: {1220}')
+trainer.print_model_size_onnx(name_base)
+trainer.print_model_size_onnx(name_static)
+trainer.print_model_size_onnx(name_dynamic)
+
+
+# print(f'Base: {acc_base}, Static: {acc_static}, Dynamic: {1220}')
 

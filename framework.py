@@ -289,8 +289,8 @@ class DiplomaTrainer():
                 attention_mask_input = attention_mask.reshape((1, 128))
                 # print(f"shape: {input_id_input.shape}")
                 # print(f"shape: {attention_mask_input.shape}")
-                print(f"shape: {len(input_id_input)}")
-                print(f"shape: {len(attention_mask_input)}")
+                print(f"shape: {input_id_input.shape}")
+                print(f"shape: {attention_mask_input.shape}")
                 break
             break
 
@@ -312,8 +312,10 @@ class DiplomaTrainer():
             'last_hidden_state': {0: 'batch_size', 1: 'sequence_length'},
             'pooler_output': {0: 'batch_size'}
             },
-            # opset_version=23                                 # use appropriate opset
+            opset_version=21
+        # use appropriate opset
         )
+
 
     def onnx_check_model(self, model_name):
         model_path = self.BASE_PATH_ONNX + model_name
@@ -339,32 +341,6 @@ class DiplomaTrainer():
                 'input_ids': input_ids_new,
                 'attention_mask': attention_mask_new
             }
-
-        #     yield {
-        #         'input_ids': np.array([[101,9078,  432,  184,  201,  3079,  211, 1079,  26,
-        #  1999,  8888,  2866,  1998,  42,  209,  200, 1713,  4556,
-        #  2149,  333,  6948,  2433,  2013,  4342,  2067, 1016,  34,
-        #  107,  13,  3976,  1012, 21079,  2036,  6079,  9078,  4,
-        #  802,  26,  2029,  2106,  3599,  1996,  213,  3105,  2021,
-        #  200,  249,  330,  1012,   102,     0,     0,     0,     0,
-        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
-        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
-        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
-        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
-        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
-        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
-        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
-        #     0,     0,     0,     0,     0,     0,     0,     0,     0,
-        #     0,     0]], dtype=np.int64),
-        #         'attention_mask': np.array([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-        # 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-        # 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        # 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        # 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        # 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]], dtype=np.int64)
-        #     }
-
-
 
 
     def gen_data_reader(self, add_labels=False, input_size=128):
@@ -403,9 +379,10 @@ class DiplomaTrainer():
             weight_type=QuantType.QInt8,
             per_channel=True,
             calibrate_method=CalibrationMethod.MinMax,
+            # op_types_to_quantize=["MatMul"],
             extra_options={
-                'OpTypesToExcludeOutputQuantization': ["LayerNormalization"],
-                'WeightSymmetric': True
+                # 'OpTypesToExcludeOutputQuantization': ["LayerNorm", "Attention"],
+                'WeightSymmetric': False
             }
         )
 
@@ -452,6 +429,24 @@ class DiplomaTrainer():
         # output = np.array(output[0]).argmax(axis=1)
 
         # print(output, inputs[0]['labels'])
+
+    def get_initializer_size_onnx(self, model_name):
+        model_path = self.BASE_PATH_ONNX + model_name
+        model = onnx.load(model_path)
+        total_params = 0
+        for initializer in model.graph.initializer:
+            total_params += initializer.raw_data.__sizeof__()
+
+        size_kb = total_params / 1024
+        size_mb = size_kb / 1024
+        print(f"Total size of initializers (parameters): {total_params} bytes ({size_kb:.2f} KB / {size_mb:.2f} MB)")
+
+    def print_model_size_onnx(self, model_name):
+        model_path = self.BASE_PATH_ONNX + model_name
+        size_bytes = os.path.getsize(model_path)
+        size_kb = size_bytes / 1024
+        size_mb = size_kb / 1024
+        print(f"Model size: {size_bytes} bytes ({size_kb:.2f} KB / {size_mb:.2f} MB)")
 
 # calibration_data_reader = BertCalibrationDataReader(calibration_data)
 
