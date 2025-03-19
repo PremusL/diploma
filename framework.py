@@ -18,6 +18,7 @@ from optimum.onnxruntime import ORTQuantizer, ORTModelForSequenceClassification
 from optimum.onnxruntime.configuration import AutoQuantizationConfig
 import onnx
 import onnxruntime as ort
+import time
 
 
 class Device(Enum):
@@ -37,7 +38,7 @@ class BertCalibrationDataReader(CalibrationDataReader):
         if self.enum_data is None:
             self.enum_data = iter(self.data_gen())
         data = next(self.enum_data, None)
-        print(data)
+        # print(data)
         return data
 
 @dataclass
@@ -224,7 +225,6 @@ class DiplomaTrainer():
             outputs = self.model(input_ids, attention_mask)
 
             prediction = outputs.logits.argmax(dim=-1)
-            # print(f'prediction {prediction}')
 
             all_predictions = torch.cat((all_predictions, prediction))
             all_labels = torch.cat((all_labels, labels))
@@ -312,7 +312,6 @@ class DiplomaTrainer():
             'last_hidden_state': {0: 'batch_size', 1: 'sequence_length'},
             'pooler_output': {0: 'batch_size'}
             },
-            opset_version=21
         # use appropriate opset
         )
 
@@ -363,12 +362,22 @@ class DiplomaTrainer():
                     data['labels'] = label.numpy().reshape((1, 1))
                 yield data
 
+    def symbolic_shape_inference(self, model_name, model_output):
+        model_path = self.BASE_PATH_ONNX + model_name
+        model_output_path = self.BASE_PATH_ONNX + model_output
+
+        model = onnx.load(model_path)
+        inferred_model = onnx.shape_inference.infer_shapes(model)
+        onnx.save(inferred_model, model_output_path)
+
 
     def onnx_quantize_static(self, model_name, model_quantized_name):
         
         model_path = self.BASE_PATH_ONNX + model_name
         model_quantized_path = self.BASE_PATH_ONNX + model_quantized_name
         calibration_reader = BertCalibrationDataReader(self.calibration_data_reader_old)
+        model = onnx.load(model_path)
+
 
         quantize_static(
             model_input=model_path,
@@ -379,10 +388,10 @@ class DiplomaTrainer():
             weight_type=QuantType.QInt8,
             per_channel=True,
             calibrate_method=CalibrationMethod.MinMax,
-            # op_types_to_quantize=["MatMul"],
+            # op_types_to_quantize=["MatMul", "GEMM"],
             extra_options={
                 # 'OpTypesToExcludeOutputQuantization': ["LayerNorm", "Attention"],
-                'WeightSymmetric': False
+                'WeightSymmetric': True
             }
         )
 
@@ -393,39 +402,63 @@ class DiplomaTrainer():
         quantize_dynamic(
             model_input=model_path,
             model_output=model_quantized_path,
-            weight_type=QuantType.QInt8
+            weight_type=QuantType.QInt8,
+            # op_types_to_quantize=['MatMul', "GEMM"]
         )
 
     def evaluation_onnx(self, model_name, eval_len=None):
-        if eval_len == None:
-            eval_len = len(self.test_dataloader)
-        model_path = self.BASE_PATH_ONNX + model_name
-        session = ort.InferenceSession(model_path)
+        # Total evaluation timer
+        total_start = time.time()
 
-        # inputs = [{"input_ids": input_ids.numpy(), "attention_mask": attention_mask.numpy(), "labels": labels.numpy() } for input_ids, attention_mask, labels in self.test_dataloader ]
+        if eval_len is None:
+            eval_len = len(self.test_dataloader.dataset)
         
+        model_path = self.BASE_PATH_ONNX + model_name
+        
+        # Measure time to create inference session
+        session_start = time.time()
+        session = ort.InferenceSession(model_path)
+        session_end = time.time()
+        
+        print(f"[INFO] ONNX session creation time: {session_end - session_start:.4f} seconds")
+
         input_gen = iter(self.gen_data_reader(add_labels=True))
 
         results = np.array([])
         labels = np.array([])
+
+        # Inference loop timer
+        inference_start = time.time()
+        
         data = next(input_gen, None)
-        while data != None:
+        step = 0
+        while data is not None and step < eval_len:
             curr_data = {
                 'input_ids': np.array(data['input_ids'], dtype=np.int64),
                 'attention_mask': np.array(data['attention_mask'], dtype=np.int64)
             }
 
             output = session.run(None, curr_data)
+
+            # Collect results and labels
             results = np.append(results, np.array(output[0]).argmax(axis=1))
-            # print(f'data: {curr_data}, output: {output}')
             labels = np.append(labels, data['labels'])
+
             data = next(input_gen, None)
-        
-        print(results, labels)
+            step += 1
+
+        inference_end = time.time()
+        print(f"[INFO] Inference loop time for {eval_len} samples: {inference_end - inference_start:.4f} seconds")
+
+        # Calculate accuracy
         accuracy = self.accuracy_numpy(results, labels)
-        print(accuracy)
+        print(f"[INFO] Accuracy: {accuracy:.4f}")
+
+        total_end = time.time()
+        print(f"[INFO] Total evaluation time: {total_end - total_start:.4f} seconds")
 
         return accuracy
+
         # output = np.array(output[0]).argmax(axis=1)
 
         # print(output, inputs[0]['labels'])
@@ -447,6 +480,16 @@ class DiplomaTrainer():
         size_kb = size_bytes / 1024
         size_mb = size_kb / 1024
         print(f"Model size: {size_bytes} bytes ({size_kb:.2f} KB / {size_mb:.2f} MB)")
+
+
+    def print_quantized_modules(self, model_name):
+        model_path = self.BASE_PATH_ONNX + model_name
+        model = onnx.load(model_path)
+        quantized_ops = set()
+        for node in model.graph.node:
+            quantized_ops.add(node.op_type)
+
+        print("Operators in the model:", quantized_ops)
 
 # calibration_data_reader = BertCalibrationDataReader(calibration_data)
 
