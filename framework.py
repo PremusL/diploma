@@ -74,7 +74,7 @@ class BertQuant(BertForSequenceClassification):
         )
 
 class ContentDataset(Dataset):
-    def __init__(self, data, labels, tokenizer, max_length=128, batch_size=14):
+    def __init__(self, data, labels, tokenizer, max_length=90, batch_size=24):
         self.data = data
         self.labels = labels
         self.tokenizer = tokenizer
@@ -100,11 +100,15 @@ class DiplomaDataset():
     tokenized_test: Dict[str, List[int]]
     train_dataloader: DataLoader
     test_dataloader: DataLoader
+    generator: torch.Generator
 
     def __init__(self, train_path, test_path, tokenizer):
         self.tokenizer =  tokenizer
         self.data_train = pd.read_csv(train_path)
         self.data_test = pd.read_csv(test_path)
+
+        self.generator = torch.Generator()
+        self.generator.manual_seed(22)
 
     def tokenize_function(self, element):
         return self.tokenizer(element, padding="max_length", truncation=True)
@@ -169,7 +173,7 @@ class DiplomaTrainer():
                 loss = outputs.loss
                 loss.backward()
                 optimizer.step()
-                if i % math.ceil(len(self.train_dataloader) / 2) == 0:
+                if i % math.ceil(len(self.train_dataloader.dataset) / 1000 ) == 0 and i > 0:
                     mid_result = self.evaluate()
                     validation_results = torch.cat((validation_results, mid_result['accuracy'].unsqueeze(0)))
                     print(validation_results)
@@ -195,11 +199,7 @@ class DiplomaTrainer():
         torch.save(self.model, '../saved_models/' + name)
 
     def load_model(self, path, bertLike=False):
-        # if bertLike: # Se ne dela
-        #     self.model = torch.load("../quantized_model_bert10000_full.pth", weights_only=False) # se zamenja
-        # else:
         self.model = torch.load(path, weights_only=False)
-        # self.model = BertQuant(self.model, config=config)
 
         return self.model
 
@@ -210,7 +210,6 @@ class DiplomaTrainer():
         return np.sum(predictions == labels) / len(labels)
 
     def evaluate(self):
-        # self.device = self.get_device()
         self.model.to('cpu')
         self.model.eval()
         self.model.to(device=self.device)
@@ -258,25 +257,9 @@ class DiplomaTrainer():
         for name, module in self.model.named_modules():
             if isinstance(module, torch.nn.Embedding) or isinstance(module, torch.nn.LayerNorm):
                 module.qconfig = None
-
-
         # # fused_model = torch.ao.quantization.fuse_modules(self.model, [['relu']])
         model_fp32_prepared = torch.ao.quantization.prepare(self.model, inplace=inplace)
         self.evaluate()
-        # self.model_static_q = torch.ao.quantization.convert(model_fp32_prepared)
-        # # self.about()
-        # if inplace: self.model = self.model_static_q
-
-        # print(torch.int_repr(self.model.classifier.weight()))
-
-
-        # for name, param in self.model_static_q.named_parameters():
-        #     if not param.is_contiguous():
-        #         print(f"Parameter {name} is not contiguous after conversion!")
-        #         param.data = param.data.contiguous()
-
-
-
         return self.model_static_q
     
     def onnx_export(self, model_name_output):
@@ -285,19 +268,14 @@ class DiplomaTrainer():
         input_id_input, attention_mask_input = None, None
         for input_ids, attention_masks, labels in self.test_dataloader:  
             for input_id, attention_mask, label in zip(input_ids, attention_masks, labels):
-                input_id_input = input_id.reshape((1, 128))
-                attention_mask_input = attention_mask.reshape((1, 128))
+                input_id_input = input_id.reshape((1, input_id.shape[0]))
+                attention_mask_input = attention_mask.reshape((1, input_id.shape[0]))
                 # print(f"shape: {input_id_input.shape}")
                 # print(f"shape: {attention_mask_input.shape}")
                 print(f"shape: {input_id_input.shape}")
                 print(f"shape: {attention_mask_input.shape}")
                 break
             break
-
-        # dummy_input = torch.randint(0, 10000, (1, 128))
-        # dummy_mask = torch.ones((1, 128))
-        # print(dummy_input,'\n', dummy_mask)
-        # print(training_data_size) 
         self.model.to("cpu")
 
         torch.onnx.export(
@@ -342,11 +320,12 @@ class DiplomaTrainer():
             }
 
 
-    def gen_data_reader(self, add_labels=False, input_size=128):
-        for input_ids, attention_masks, labels in self.test_dataloader:  
+    def gen_data_reader(self, add_labels=False):
+        temp_dataloader = self.train_dataloader if not add_labels else self.test_dataloader
+        for input_ids, attention_masks, labels in temp_dataloader:  
             for input_id, attention_mask, label in zip(input_ids, attention_masks, labels):
-                input_arr = input_id.numpy().reshape((1, input_size)).astype(np.int64)
-                mask_arr = attention_mask.numpy().reshape((1, input_size)).astype(np.int64)
+                input_arr = input_id.numpy().reshape((1, input_id.shape[0])).astype(np.int64)
+                mask_arr = attention_mask.numpy().reshape((1, input_id.shape[0])).astype(np.int64)
                 if not add_labels:
                     input_arr = input_arr[input_arr > 0]
                     input_arr = np.array([input_arr[1:len(input_arr) - 2]])
@@ -365,8 +344,8 @@ class DiplomaTrainer():
     def symbolic_shape_inference(self, model_name, model_output):
         model_path = self.BASE_PATH_ONNX + model_name
         model_output_path = self.BASE_PATH_ONNX + model_output
-
         model = onnx.load(model_path)
+
         inferred_model = onnx.shape_inference.infer_shapes(model)
         onnx.save(inferred_model, model_output_path)
 
@@ -376,8 +355,6 @@ class DiplomaTrainer():
         model_path = self.BASE_PATH_ONNX + model_name
         model_quantized_path = self.BASE_PATH_ONNX + model_quantized_name
         calibration_reader = BertCalibrationDataReader(self.calibration_data_reader_old)
-        model = onnx.load(model_path)
-
 
         quantize_static(
             model_input=model_path,
@@ -386,11 +363,9 @@ class DiplomaTrainer():
             quant_format=QuantFormat.QDQ,     # QDQ is recommended, alternatively QuantFormat.QOperator
             activation_type=QuantType.QInt8,
             weight_type=QuantType.QInt8,
-            per_channel=True,
+            # per_channel=True,
             calibrate_method=CalibrationMethod.MinMax,
-            # op_types_to_quantize=["MatMul", "GEMM"],
             extra_options={
-                # 'OpTypesToExcludeOutputQuantization': ["LayerNorm", "Attention"],
                 'WeightSymmetric': True
             }
         )
@@ -459,9 +434,6 @@ class DiplomaTrainer():
 
         return accuracy
 
-        # output = np.array(output[0]).argmax(axis=1)
-
-        # print(output, inputs[0]['labels'])
 
     def get_initializer_size_onnx(self, model_name):
         model_path = self.BASE_PATH_ONNX + model_name
