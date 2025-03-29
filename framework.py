@@ -21,6 +21,7 @@ import onnxruntime as ort
 import time
 
 
+
 class Device(Enum):
     CUDA = "cuda",
     CPU =  "cpu"
@@ -290,7 +291,7 @@ class DiplomaTrainer():
             'last_hidden_state': {0: 'batch_size', 1: 'sequence_length'},
             'pooler_output': {0: 'batch_size'}
             },
-        # use appropriate opset
+        # opset_version=14
         )
 
 
@@ -363,10 +364,13 @@ class DiplomaTrainer():
             quant_format=QuantFormat.QDQ,     # QDQ is recommended, alternatively QuantFormat.QOperator
             activation_type=QuantType.QInt8,
             weight_type=QuantType.QInt8,
-            # per_channel=True,
+            op_types_to_quantize=['MatMul', "Gemm"],
+            per_channel=True,
             calibrate_method=CalibrationMethod.MinMax,
             extra_options={
-                'WeightSymmetric': True
+                'WeightSymmetric': True,
+                'ActivationSymmetric': True
+
             }
         )
 
@@ -378,10 +382,15 @@ class DiplomaTrainer():
             model_input=model_path,
             model_output=model_quantized_path,
             weight_type=QuantType.QInt8,
-            # op_types_to_quantize=['MatMul', "GEMM"]
+            op_types_to_quantize=['MatMul', "Gemm"],
+            extra_options={
+                'WeightSymmetric': True,
+                'ActivationSymmetric': True
+
+            }
         )
 
-    def evaluation_onnx(self, model_name, eval_len=None):
+    def evaluation_onnx(self, model_name, eval_len=None, variance=True):
         # Total evaluation timer
         total_start = time.time()
 
@@ -391,16 +400,24 @@ class DiplomaTrainer():
         model_path = self.BASE_PATH_ONNX + model_name
         
         # Measure time to create inference session
+        session_options = ort.SessionOptions()
+        # session_options.enable_profiling = True
+        # session_options.log_severity_level = 1
+
         session_start = time.time()
-        session = ort.InferenceSession(model_path)
+        session = ort.InferenceSession(model_path,
+                                       providers=['CUDAExecutionProvider'], sess_options=session_options)
         session_end = time.time()
         
         print(f"[INFO] ONNX session creation time: {session_end - session_start:.4f} seconds")
 
         input_gen = iter(self.gen_data_reader(add_labels=True))
 
+        probabilities = np.array([])
         results = np.array([])
         labels = np.array([])
+
+        softmax = torch.nn.Softmax(dim=1)
 
         # Inference loop timer
         inference_start = time.time()
@@ -416,11 +433,14 @@ class DiplomaTrainer():
             output = session.run(None, curr_data)
 
             # Collect results and labels
+            # print(torch.softmax(torch.from_numpy(output[0]), dim=-1).max(dim=-1).values)
+            probabilities = np.append(probabilities, np.array(torch.softmax(torch.from_numpy(output[0]), dim=-1).max(dim=-1).values))
             results = np.append(results, np.array(output[0]).argmax(axis=1))
             labels = np.append(labels, data['labels'])
 
             data = next(input_gen, None)
             step += 1
+
 
         inference_end = time.time()
         print(f"[INFO] Inference loop time for {eval_len} samples: {inference_end - inference_start:.4f} seconds")
@@ -432,7 +452,10 @@ class DiplomaTrainer():
         total_end = time.time()
         print(f"[INFO] Total evaluation time: {total_end - total_start:.4f} seconds")
 
-        return accuracy
+        return {
+                'accuracy': accuracy,
+                'probabilities': probabilities
+                }
 
 
     def get_initializer_size_onnx(self, model_name):
