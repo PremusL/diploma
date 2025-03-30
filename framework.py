@@ -15,11 +15,12 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 from onnxruntime.quantization import quantize_static, QuantType, CalibrationDataReader, quantize_dynamic, QuantFormat, CalibrationMethod
 from optimum.onnxruntime import ORTQuantizer, ORTModelForSequenceClassification
-from optimum.onnxruntime.configuration import AutoQuantizationConfig
+from optimum.onnxruntime.configuration import AutoQuantizationConfig, AutoCalibrationConfig
 import onnx
 import onnxruntime as ort
 import time
-
+from functools import partial
+import datasets
 
 
 class Device(Enum):
@@ -200,7 +201,7 @@ class DiplomaTrainer():
         torch.save(self.model, '../saved_models/' + name)
 
     def load_model(self, path, bertLike=False):
-        self.model = torch.load(path, weights_only=False)
+        self.model = torch.load(path, weights_only=False, )
 
         return self.model
 
@@ -288,10 +289,8 @@ class DiplomaTrainer():
         dynamic_axes={
             'input_ids': {0: 'batch_size', 1: 'sequence_length'},
             'attention_mask': {0: 'batch_size', 1: 'sequence_length'},
-            'last_hidden_state': {0: 'batch_size', 1: 'sequence_length'},
-            'pooler_output': {0: 'batch_size'}
+            'last_hidden_state': {0: 'batch_size', 1: 'sequence_length'}
             },
-        # opset_version=14
         )
 
 
@@ -364,13 +363,12 @@ class DiplomaTrainer():
             quant_format=QuantFormat.QDQ,     # QDQ is recommended, alternatively QuantFormat.QOperator
             activation_type=QuantType.QInt8,
             weight_type=QuantType.QInt8,
-            op_types_to_quantize=['MatMul', "Gemm"],
-            per_channel=True,
+            op_types_to_quantize=['MatMul'],
             calibrate_method=CalibrationMethod.MinMax,
             extra_options={
                 'WeightSymmetric': True,
-                'ActivationSymmetric': True
-
+                'ActivationSymmetric': False,
+                # 'EnableSubgraph': True
             }
         )
 
@@ -382,7 +380,7 @@ class DiplomaTrainer():
             model_input=model_path,
             model_output=model_quantized_path,
             weight_type=QuantType.QInt8,
-            op_types_to_quantize=['MatMul', "Gemm"],
+            op_types_to_quantize=['MatMul', "Gemm", "Add"],
             extra_options={
                 'WeightSymmetric': True,
                 'ActivationSymmetric': True
@@ -390,7 +388,7 @@ class DiplomaTrainer():
             }
         )
 
-    def evaluation_onnx(self, model_name, eval_len=None, variance=True):
+    def evaluation_onnx_batch(self, model_name, eval_len=None, variance=True):
         # Total evaluation timer
         total_start = time.time()
 
@@ -417,7 +415,71 @@ class DiplomaTrainer():
         results = np.array([])
         labels = np.array([])
 
-        softmax = torch.nn.Softmax(dim=1)
+        # Inference loop timer
+        inference_start = time.time()
+    
+        step = 0
+        for input_ids, attention_masks, labels in self.test_dataloader:  
+            curr_data = {
+                'input_ids': np.array(input_ids, dtype=np.int64),
+                'attention_mask': np.array(attention_masks, dtype=np.int64)
+            }
+
+
+            output = session.run(None, curr_data)
+            print(output)
+
+            # Collect results and labels
+            # print(torch.softmax(torch.from_numpy(output[0]), dim=-1).max(dim=-1).values)
+            probabilities = np.append(probabilities, np.array(torch.softmax(torch.from_numpy(output[0]), dim=-1).max(dim=-1).values))
+            results = np.append(results, np.array(output[0]).argmax(axis=1))
+            labels = np.append(labels, labels)
+
+
+            step += 1
+
+
+        inference_end = time.time()
+        print(f"[INFO] Inference loop time for {eval_len} samples: {inference_end - inference_start:.4f} seconds")
+
+        # Calculate accuracy
+        accuracy = self.accuracy_numpy(results, labels)
+        print(f"[INFO] Accuracy: {accuracy:.4f}")
+
+        total_end = time.time()
+        print(f"[INFO] Total evaluation time: {total_end - total_start:.4f} seconds")
+
+        return {
+                'accuracy': accuracy,
+                'probabilities': probabilities
+                }
+
+    def evaluation_onnx(self, model_name, eval_len=None, variance=True):
+        # Total evaluation timer
+        total_start = time.time()
+
+        if eval_len is None:
+            eval_len = len(self.test_dataloader.dataset)
+        
+        model_path = self.BASE_PATH_ONNX + model_name
+        
+        # Measure time to create inference session
+        session_options = ort.SessionOptions()
+        # session_options.enable_profiling = True
+        # session_options.log_severity_level = 1
+
+        session_start = time.time()
+        session = ort.InferenceSession(model_path,
+                                       providers=['CPUExecutionProvider'], sess_options=session_options)
+        session_end = time.time()
+        
+        print(f"[INFO] ONNX session creation time: {session_end - session_start:.4f} seconds")
+
+        input_gen = iter(self.gen_data_reader(add_labels=True))
+
+        probabilities = np.array([])
+        results = np.array([])
+        labels = np.array([])
 
         # Inference loop timer
         inference_start = time.time()
@@ -477,16 +539,73 @@ class DiplomaTrainer():
         print(f"Model size: {size_bytes} bytes ({size_kb:.2f} KB / {size_mb:.2f} MB)")
 
 
-    def print_quantized_modules(self, model_name):
+    # def print_quantized_modules(self, model_name):from functools import partial
+
+    def quantize_dynamic_avx512(self, model_name, model_quantized_name):
         model_path = self.BASE_PATH_ONNX + model_name
+        model_quantized_path = self.BASE_PATH_ONNX + model_quantized_name
+
         model = onnx.load(model_path)
-        quantized_ops = set()
-        for node in model.graph.node:
-            quantized_ops.add(node.op_type)
+        quantizer = ORTQuantizer.from_pretrained('../saved_onnx/AVX512/')
 
-        print("Operators in the model:", quantized_ops)
+        dqconfig = AutoQuantizationConfig.avx512_vnni(is_static=False, per_channel=False)
+        model_quantized_path2 = quantizer.quantize(
+        save_dir=model_quantized_path,
+        quantization_config=dqconfig,
+        )
 
-# calibration_data_reader = BertCalibrationDataReader(calibration_data)
+    
+
+    def quantize_static_avx512(self, model_name, model_quantized_name):
+        model_path = self.BASE_PATH_ONNX + model_name
+        model_quantized_path = self.BASE_PATH_ONNX + model_quantized_name
+        quantizer = ORTQuantizer.from_pretrained('../saved_onnx/AVX512/')
+
+        # Configure quantization
+        dqconfig = AutoQuantizationConfig.avx512_vnni(
+            is_static=True,
+            per_channel=False,
+            use_symmetric_activations=True,
+            operators_to_quantize=['MatMul', 'Gemm']  # Important for BERT
+        )
+
+        # Prepare calibration data with correct shapes
+        input_ids_list = []
+        attention_mask_list = []
+
+        for data in self.gen_data_reader(add_labels=False):
+            # Ensure 2D shape [batch_size, seq_len]
+            input_ids = data['input_ids'].squeeze(0)  # Remove batch dim if needed
+            attention_mask = data['attention_mask'].squeeze(0)
+            
+            input_ids_list.append(input_ids)
+            attention_mask_list.append(attention_mask)
+            
+        
+        # Create properly shaped dataset
+        calibration_dataset = datasets.Dataset.from_dict({
+            'input_ids': input_ids_list,
+            'attention_mask': attention_mask_list
+        })
+
+        print('Calibration dataset shape check:')
+        print(f"input_ids: {type(calibration_dataset['input_ids'])}")  # Should be (seq_len,)
+        print(f"attention_mask: {type(calibration_dataset['attention_mask'])}")
+
+        # Calibrate
+        calibration_config = AutoCalibrationConfig.minmax(calibration_dataset)
+        ranges = quantizer.fit(
+            dataset=calibration_dataset,
+            calibration_config=calibration_config,
+            operators_to_quantize=dqconfig.operators_to_quantize,
+        )
+
+        # Quantize
+        quantizer.quantize(
+            save_dir=model_quantized_path,
+            calibration_tensors_range=ranges,
+            quantization_config=dqconfig,
+        )
 
 
 

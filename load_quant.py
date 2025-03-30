@@ -3,48 +3,37 @@ from framework import *
 tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
 dataDiploma = DiplomaDataset('./data/train.csv', './data/test.csv', tokenizer=tokenizer)
-dataLoader_calib, dataLoader_test = dataDiploma.prepare_data(num_examples_train=200, num_examples_test=200, class_count=2)
+dataLoader_calib, dataLoader_test = dataDiploma.prepare_data(num_examples_train=2500, num_examples_test=400, class_count=2)
 model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=2)
 config = BertModel.from_pretrained('bert-base-uncased').config
 trainer = DiplomaTrainer(model, dataLoader_calib, dataLoader_test, device='cpu')
-# trainer.load_model('../saved_models/bert_2000_C2_E3_test')
+trainer.load_model('../saved_models/bert_2000_C2_E3_test')
 
 name_base = 'bert_2000_C2_E3_test.onnx'
 name_inffered = 'bert_2000_C2_E3_inferred.onnx'
 name_dynamic = 'bert_dynamic.onnx'
 name_static = 'bert_static.onnx'
-
-# model_names = ['../saved_models/bert_2000_C2_E3_test',]
-variance = {}
-
-for i in range(2, 15):
-    cur_model_name = f'../saved_models/bert_2000_C{i}_E3_test'
-    name_base_export = f'bert_2000_C{i}_E3_test.onnx'
-    trainer.load_model(cur_model_name)
-    trainer.onnx_export(name_base_export)
-    res_base = trainer.evaluation_onnx(name_base_export)
-    cur_variance=(len(res_base['probabilities']) - res_base['probabilities'].sum()) / len(res_base['probabilities'])
-    print('current variance', cur_variance)
-    variance[name_base_export] = cur_variance
-
-print(variance)
-with open('results.txt', '+w') as f:
-    f.write(str(variance))
+name_static2 = 'AVX512_quantized'
 
 
-# trainer.onnx_export(name_base)
+trainer.onnx_export(name_base)
 
 # trainer.onnx_check_model(name_base)
-# 
-# 
-# trainer.symbolic_shape_inference(name_base, name_inffered)
-# 
-# trainer.onnx_quantize_dynamic(name_inffered, name_dynamic)
-# trainer.onnx_quantize_static(name_inffered, name_static)
 
+# trainer.quantize_static_avx512(name_base, name_static2)
+# print('Dynamic new:')
+# res_base = trainer.evaluation_onnx(f'{name_static2}/bert_2000_C2_E3_test_quantized.onnx')
+
+trainer.symbolic_shape_inference(name_base, name_inffered) 
+trainer.onnx_quantize_static(name_inffered, name_static)
+# trainer.onnx_quantize_dynamic(name_inffered, name_dynamic)
+
+# print('Base old:')
 # res_base = trainer.evaluation_onnx(name_base)
+# print('Dynamic old:')
 # res_dynamic = trainer.evaluation_onnx(name_dynamic)
-# res_static = trainer.evaluation_onnx(name_static)
+print('Static old:')
+res_static = trainer.evaluation_onnx(name_static)
 # print(f'Base: {acc_base}, Static: {acc_static}, Dynamic: {acc_dynamic}')
 
 
@@ -54,7 +43,7 @@ with open('results.txt', '+w') as f:
 # trainer.print_quantized_modules(name_static)
 
 # trainer.print_model_size_onnx(name_base)
-# trainer.print_model_size_onnx(name_static)
+trainer.print_model_size_onnx(name_static)
 # trainer.print_model_size_onnx(name_dynamic)
 # print("-----------------------------------------")
 # trainer.print_model_size_onnx(name_base)
