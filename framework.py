@@ -470,7 +470,7 @@ class DiplomaTrainer():
 
         session_start = time.time()
         session = ort.InferenceSession(model_path,
-                                       providers=['CPUExecutionProvider'], sess_options=session_options)
+                                       providers=['CUDAExecutionProvider'], sess_options=session_options)
         session_end = time.time()
         
         print(f"[INFO] ONNX session creation time: {session_end - session_start:.4f} seconds")
