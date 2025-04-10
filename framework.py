@@ -23,10 +23,6 @@ from functools import partial
 import datasets
 
 
-class Device(Enum):
-    CUDA = "cuda",
-    CPU =  "cpu"
-
 
 class BertCalibrationDataReader(CalibrationDataReader):
     def __init__(self, data_gen):
@@ -556,10 +552,10 @@ class DiplomaTrainer():
 
     
 
-    def quantize_static_avx512(self, model_name, model_quantized_name):
+    def quantize_static_avx512(self, model_name, model_quantized_name, folder):
         model_path = self.BASE_PATH_ONNX + model_name
         model_quantized_path = self.BASE_PATH_ONNX + model_quantized_name
-        quantizer = ORTQuantizer.from_pretrained('../saved_onnx/AVX512/')
+        quantizer = ORTQuantizer.from_pretrained(f'../saved_onnx/AVX512/{folder}/')
 
         # Configure quantization
         dqconfig = AutoQuantizationConfig.avx512_vnni(
@@ -599,11 +595,12 @@ class DiplomaTrainer():
             calibration_config=calibration_config,
             operators_to_quantize=dqconfig.operators_to_quantize,
         )
-
+        
         # Quantize
         quantizer.quantize(
-            save_dir=model_quantized_path,
+            file_suffix='',
             calibration_tensors_range=ranges,
+            save_dir='../saved_onnx',
             quantization_config=dqconfig,
         )
 
