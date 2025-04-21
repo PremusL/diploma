@@ -7,7 +7,7 @@ dataDiploma = DiplomaDataset('./data/train.csv', './data/test.csv', tokenizer=to
 filename='results_static.txt'
 results = {}
 for i in range(2, 15):
-    graph_name = f'BERT_{i}C'
+    graph_name = f'BERT_C{i}'
     print(graph_name)
     examples_calibration = int(4000 / i)
     test_calibration = int(2000 / i)
@@ -16,11 +16,11 @@ for i in range(2, 15):
     trainer = DiplomaTrainer(None, dataLoader_calib, dataLoader_test, device='cpu')
     trainer.load_model(f'../saved_models/bert_2000_C{i}_E3_test')
     cur_model_onnx_name = f'bert_2000_C{i}_E3.onnx'
-    cur_model_onnx_name_static = f'bert_2000_C{i}_E3_static.onnx'
+    cur_model_onnx_name_quantized = f'bert_2000_C{i}_E3_quantized.onnx'
 
     trainer.onnx_export(f'AVX512/{i}/{cur_model_onnx_name}')
-    trainer.quantize_static_avx512('', cur_model_onnx_name_static, i)
-    cur_result = trainer.evaluation_onnx(cur_model_onnx_name)
+    trainer.quantize_static_avx512('static_quant', i)
+    cur_result = trainer.evaluation_onnx(f'static_quant/{cur_model_onnx_name_quantized}')
 
     variance = (len(cur_result['probabilities']) - cur_result['probabilities'].sum() ) / len(cur_result['probabilities'])
     results[graph_name] = variance
