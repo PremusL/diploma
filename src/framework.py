@@ -432,39 +432,33 @@ class DiplomaTrainer():
         size_mb = size_kb / 1024
         print(f"Model size: {size_bytes} bytes ({size_kb:.2f} KB / {size_mb:.2f} MB)")
 
-    def quantize_dynamic_avx512(self, model_name, model_quantized_name):
-        model_path = self.BASE_PATH_ONNX + model_name
-        model_quantized_path = self.BASE_PATH_ONNX + model_quantized_name
-
-        model = onnx.load(model_path)
-        quantizer = ORTQuantizer.from_pretrained('../saved_onnx/AVX512/')
+    def quantize_dynamic_avx512(self, output_dir, folder):
+        model_quantized_path = f'../saved_onnx/{output_dir}'
+        quantizer = ORTQuantizer.from_pretrained(f'../saved_onnx/AVX512/{folder}/')
 
         dqconfig = AutoQuantizationConfig.avx512_vnni(is_static=False, per_channel=False)
         model_quantized_path2 = quantizer.quantize(
-        save_dir=model_quantized_path,
-        quantization_config=dqconfig,
+            save_dir=model_quantized_path,
+            quantization_config=dqconfig,
+
         )
 
-    def quantize_static_avx512(self, model_name, model_quantized_name, folder):
-        model_path = self.BASE_PATH_ONNX + model_name
-        model_quantized_path = self.BASE_PATH_ONNX + model_quantized_name
+    def quantize_static_avx512(self, output_dir, folder):
+        model_quantized_path = f'../saved_onnx/{output_dir}'
         quantizer = ORTQuantizer.from_pretrained(f'../saved_onnx/AVX512/{folder}/')
 
-        # Configure quantization
         dqconfig = AutoQuantizationConfig.avx512_vnni(
             is_static=True,
             per_channel=False,
             use_symmetric_activations=True,
-            operators_to_quantize=['MatMul', 'Gemm']  # Important for BERT
+            operators_to_quantize=['MatMul', 'Gemm']
         )
 
-        # Prepare calibration data with correct shapes
         input_ids_list = []
         attention_mask_list = []
 
         for data in self.gen_data_reader(add_labels=False):
-            # Ensure 2D shape [batch_size, seq_len]
-            input_ids = data['input_ids'].squeeze(0)  # Remove batch dim if needed
+            input_ids = data['input_ids'].squeeze(0)
             attention_mask = data['attention_mask'].squeeze(0)
             
             input_ids_list.append(input_ids)
@@ -488,8 +482,7 @@ class DiplomaTrainer():
         )
         
         quantizer.quantize(
-            file_suffix='',
             calibration_tensors_range=ranges,
-            save_dir='../saved_onnx',
+            save_dir=model_quantized_path,
             quantization_config=dqconfig,
         )
