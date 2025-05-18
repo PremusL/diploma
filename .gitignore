@@ -1,2 +1,6 @@
 __pycache__/
-data/
+src/data/
+src/__pycache__/
+diplomaenv/
+saved_models/
+saved_onnx/

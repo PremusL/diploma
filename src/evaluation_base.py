@@ -5,27 +5,32 @@ tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
 dataDiploma = DiplomaDataset('./data/train.csv', './data/test.csv', tokenizer=tokenizer)
 
+num_training_examples = 3000
+epochs = 3
+
 results = {}
 for i in range(2, 15):
     graph_name = f'BERT_C{i}'
     test_size = int(2000 / i)
-    dataLoader_calib, dataLoader_test = dataDiploma.prepare_data(num_examples_train=2000, num_examples_test=test_size, class_count=i)
+    dataLoader_calib, dataLoader_test = dataDiploma.prepare_data(num_examples_train=None, num_examples_test=test_size, class_count=i)
     trainer = DiplomaTrainer(None, dataLoader_calib, dataLoader_test)
-    trainer.load_model(f'../saved_models/bert_2000_C{i}_E3_test')
-    cur_model_onnx_name = f'/{i}/bert_2000_C{i}_E3_test.onnx'
+    trainer.load_model(f'../saved_models/BERT_{num_training_examples}_C{i}_E{epochs}')
+    cur_model_onnx_name = f'{i}/BERT_{num_training_examples}_C{i}_E{epochs}.onnx'
     trainer.onnx_export(cur_model_onnx_name)
     cur_result = trainer.evaluation_onnx(cur_model_onnx_name)
 
     graph_name = f'BERT_{i}C'
-    variance = (len(cur_result['probabilities']) - cur_result['probabilities'].sum() ) / len(cur_result['probabilities'])
-    results[graph_name] = variance
+    probability = cur_result['probabilities'].sum() / len(cur_result['probabilities'])
+    log_loss = cur_result['log_loss'].mean()
+
+    results[graph_name] = log_loss
 
 
-with open('results2.txt', "+w") as f:
+with open('results_log_loss_3000.txt', "+w") as f:
     f.write(str(results))
 
 data = ""
-with open('results2.txt', "+r") as f:
+with open('results_log_loss_3000.txt', "+r") as f:
     data = f.readline()
 
 results = eval(data)

@@ -1,28 +1,22 @@
 import torch
 import pandas as pd
 import torch.ao.quantization
-from transformers import BertTokenizer, BertForSequenceClassification, Trainer, TrainingArguments, BertModel
 import os
 from torch.utils.data import DataLoader, Dataset
 import tqdm
 from typing import Dict, List
 import numpy as np
 import math
-from enum import Enum
-# from neural_compressor.quantization import fit
-# from neural_compressor.config import PostTrainingQuantConfig, TuningCriterion
-from dataclasses import dataclass
-from typing import Optional, Tuple
 from onnxruntime.quantization import quantize_static, QuantType, CalibrationDataReader, quantize_dynamic, QuantFormat, CalibrationMethod
-from optimum.onnxruntime import ORTQuantizer, ORTModelForSequenceClassification
+from optimum.onnxruntime import ORTQuantizer
 from optimum.onnxruntime.configuration import AutoQuantizationConfig, AutoCalibrationConfig
 import onnx
 import onnxruntime as ort
 import time
 from functools import partial
 import datasets
-
-
+from diploma_dataset import *
+from transformers import BertTokenizer, BertForSequenceClassification
 
 class BertCalibrationDataReader(CalibrationDataReader):
     def __init__(self, data_gen):
@@ -38,108 +32,6 @@ class BertCalibrationDataReader(CalibrationDataReader):
         data = next(self.enum_data, None)
         # print(data)
         return data
-
-@dataclass
-class QuantOutput():
-    loss: Optional[torch.FloatTensor] = None
-    logits: torch.FloatTensor = None
-    hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
-    attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
-
-class BertQuant(BertForSequenceClassification):
-    def __init__(self, bertModel, config):
-        super(BertForSequenceClassification, self).__init__(config)
-        self.bertModel = bertModel
-        self.quant = torch.quantization.QuantStub()
-        self.dequant = torch.quantization.DeQuantStub()
-
-    def forward(self, input_ids, attention_mask=None, token_type_ids=None, **kwargs):
-        input_ids = self.quant(input_ids)
-
-        # if attention_mask is not None:
-        #     attention_mask = self.quant(attention_mask)
-
-        if token_type_ids is not None:
-            token_type_ids = self.quant(token_type_ids)
-
-        outputs = self.bertModel(input_ids, attention_mask)
-
-        return QuantOutput(
-            loss=outputs.loss,
-            logits=self.dequant(outputs.logits),
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
-
-class ContentDataset(Dataset):
-    def __init__(self, data, labels, tokenizer, max_length=90, batch_size=24):
-        self.data = data
-        self.labels = labels
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        self.batch_size = batch_size
-    
-    def __len__(self):
-        return len(self.data) 
-    
-    def __getitem__(self, idx):
-        encoding = self.tokenizer(self.data[idx], padding="max_length", truncation=True, max_length=self.max_length, return_tensors='pt')
-
-        input_ids = encoding["input_ids"].squeeze(0)
-        attention_mask = encoding["attention_mask"].squeeze(0)
-        label = torch.tensor(self.labels[idx], dtype=torch.long)
-
-        return input_ids, attention_mask, label
-
-class DiplomaDataset():
-    data_train: pd.DataFrame
-    data_test: pd.DataFrame
-    tokenized_train: Dict[str, List[int]]
-    tokenized_test: Dict[str, List[int]]
-    train_dataloader: DataLoader
-    test_dataloader: DataLoader
-    generator: torch.Generator
-
-    def __init__(self, train_path, test_path, tokenizer):
-        self.tokenizer =  tokenizer
-        self.data_train = pd.read_csv(train_path)
-        self.data_test = pd.read_csv(test_path)
-
-        self.generator = torch.Generator()
-        self.generator.manual_seed(22)
-
-    def tokenize_function(self, element):
-        return self.tokenizer(element, padding="max_length", truncation=True)
-
-    def prepare_data(self, num_examples_train=3000, num_examples_test=1000, class_count=2, batch_size=24):
-        selected_test = self.select_examples(self.data_test, num_examples=num_examples_test, class_count=class_count)
-        dataset_test = ContentDataset(selected_test['content'], selected_test['label'], self.tokenizer)
-        self.test_dataloader = DataLoader(dataset_test, shuffle=True, batch_size=batch_size)
-        self.train_dataloader = None
-
-        if num_examples_train is not None and num_examples_train > 0:
-            selected_train = self.select_examples(self.data_train, num_examples=num_examples_train, class_count=class_count)
-            dataset_train = ContentDataset(selected_train['content'], selected_train['label'], self.tokenizer)
-            self.train_dataloader = DataLoader(dataset_train, shuffle=True, batch_size=batch_size)
-
-        return self.train_dataloader, self.test_dataloader
-
-    def collate_fn(batch):
-        input_ids =       torch.stack([torch.tensor(item['tokenized'][i]['input_ids']) for i,item in enumerate(batch)])
-        attention_mask =  torch.stack([torch.tensor(item['tokenized'][i]['attention_mask']) for i,item in enumerate(batch)])
-        labels =          torch.tensor([item['label'] for item in batch])
-        return input_ids, attention_mask, labels
-
-
-    def select_examples(self, data, num_examples, class_count):
-        output_data = pd.DataFrame()
-        
-        for i in range(class_count):
-            selected = data[data['label'] == i][:num_examples]
-            output_data = pd.concat([output_data, selected])
-        output_data.reset_index(inplace=True)
-        return output_data
-
 class DiplomaTrainer():
     BASE_PATH_ONNX = '../saved_onnx/'
 
@@ -154,7 +46,10 @@ class DiplomaTrainer():
     def about(self):
         print(f"Model: {self.model}")
 
-    def train(self,epochs=3):
+    def half_precision(self):
+        self.model = self.model.half()
+
+    def train(self,epochs=3, early_stopping=False):
         validation_results = torch.tensor([0]).to(device=self.device)
         self.model.to(device=self.device)
         self.model.train()
@@ -171,7 +66,7 @@ class DiplomaTrainer():
                 loss = outputs.loss
                 loss.backward()
                 optimizer.step()
-                if i % math.ceil(len(self.train_dataloader.dataset) / 1000 ) == 0 and i > 0:
+                if early_stopping and i % math.ceil(len(self.train_dataloader.dataset) / 500 ) == 0 and i > 0:
                     mid_result = self.evaluate()
                     validation_results = torch.cat((validation_results, mid_result['accuracy'].unsqueeze(0)))
                     print(validation_results)
@@ -179,8 +74,8 @@ class DiplomaTrainer():
 
                     val_len = len(validation_results)
                     if val_len > 3\
-                        and abs(validation_results[-3:][2] - validation_results[-3:][1]) < 0.05\
-                        and abs(validation_results[-3:][0] - validation_results[-3:][1]) < 0.05:
+                        and abs(validation_results[-3:][2] - validation_results[-3:][1]) < 0.001\
+                        and abs(validation_results[-3:][0] - validation_results[-3:][1]) < 0.001:
                         print('\nModel is not learning anymore')
                         return self.model
         return self.model
@@ -330,9 +225,9 @@ class DiplomaTrainer():
                     mask_arr = np.array([mask_arr[1:len(mask_arr) - 2]])
 
                 data = {
-                    'input_ids':  input_arr,
-                    'attention_mask':  mask_arr
-                }
+                        'input_ids':  input_arr,
+                        'attention_mask':  mask_arr
+                       }
                 if add_labels:
                     data['labels'] = label.numpy().reshape((1, 1))
                 yield data
@@ -364,7 +259,6 @@ class DiplomaTrainer():
             extra_options={
                 'WeightSymmetric': True,
                 'ActivationSymmetric': False,
-                # 'EnableSubgraph': True
             }
         )
 
@@ -474,6 +368,7 @@ class DiplomaTrainer():
         input_gen = iter(self.gen_data_reader(add_labels=True))
 
         probabilities = np.array([])
+        log_loss = np.array([])
         results = np.array([])
         labels = np.array([])
 
@@ -491,8 +386,10 @@ class DiplomaTrainer():
             output = session.run(None, curr_data)
 
             # Collect results and labels
-            # print(torch.softmax(torch.from_numpy(output[0]), dim=-1).max(dim=-1).values)
+            # print(-torch.softmax(torch.from_numpy(output[0]), dim=-1).reshape(-1)[data['labels']].log().item())
             probabilities = np.append(probabilities, np.array(torch.softmax(torch.from_numpy(output[0]), dim=-1).max(dim=-1).values))
+
+            log_loss = np.append(log_loss,-(torch.softmax(torch.from_numpy(output[0]), dim=-1).reshape(-1)[data['labels']] + 1e-7).log().item())
             results = np.append(results, np.array(output[0]).argmax(axis=1))
             labels = np.append(labels, data['labels'])
 
@@ -512,7 +409,8 @@ class DiplomaTrainer():
 
         return {
                 'accuracy': accuracy,
-                'probabilities': probabilities
+                'probabilities': probabilities,
+                'log_loss':  log_loss
                 }
 
 
@@ -534,9 +432,6 @@ class DiplomaTrainer():
         size_mb = size_kb / 1024
         print(f"Model size: {size_bytes} bytes ({size_kb:.2f} KB / {size_mb:.2f} MB)")
 
-
-    # def print_quantized_modules(self, model_name):from functools import partial
-
     def quantize_dynamic_avx512(self, model_name, model_quantized_name):
         model_path = self.BASE_PATH_ONNX + model_name
         model_quantized_path = self.BASE_PATH_ONNX + model_quantized_name
@@ -549,8 +444,6 @@ class DiplomaTrainer():
         save_dir=model_quantized_path,
         quantization_config=dqconfig,
         )
-
-    
 
     def quantize_static_avx512(self, model_name, model_quantized_name, folder):
         model_path = self.BASE_PATH_ONNX + model_name
@@ -578,7 +471,6 @@ class DiplomaTrainer():
             attention_mask_list.append(attention_mask)
             
         
-        # Create properly shaped dataset
         calibration_dataset = datasets.Dataset.from_dict({
             'input_ids': input_ids_list,
             'attention_mask': attention_mask_list
@@ -588,7 +480,6 @@ class DiplomaTrainer():
         print(f"input_ids: {type(calibration_dataset['input_ids'])}")  # Should be (seq_len,)
         print(f"attention_mask: {type(calibration_dataset['attention_mask'])}")
 
-        # Calibrate
         calibration_config = AutoCalibrationConfig.minmax(calibration_dataset)
         ranges = quantizer.fit(
             dataset=calibration_dataset,
@@ -596,16 +487,9 @@ class DiplomaTrainer():
             operators_to_quantize=dqconfig.operators_to_quantize,
         )
         
-        # Quantize
         quantizer.quantize(
             file_suffix='',
             calibration_tensors_range=ranges,
             save_dir='../saved_onnx',
             quantization_config=dqconfig,
         )
-
-
-
-
-
-
