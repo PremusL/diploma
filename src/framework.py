@@ -16,7 +16,7 @@ import time
 from functools import partial
 import datasets
 from diploma_dataset import *
-from transformers import BertTokenizer, BertForSequenceClassification
+from transformers import BertTokenizer, BertForSequenceClassification, BertModel
 
 class BertCalibrationDataReader(CalibrationDataReader):
     def __init__(self, data_gen):
@@ -273,7 +273,7 @@ class DiplomaTrainer():
             op_types_to_quantize=['MatMul', "Gemm", "Add"],
             extra_options={
                 'WeightSymmetric': True,
-                'ActivationSymmetric': True
+                'ActivationSymmetric': False
 
             }
         )
@@ -436,7 +436,7 @@ class DiplomaTrainer():
         model_quantized_path = f'../saved_onnx/{output_dir}'
         quantizer = ORTQuantizer.from_pretrained(f'../saved_onnx/AVX512/{folder}/')
 
-        dqconfig = AutoQuantizationConfig.avx512_vnni(is_static=False, per_channel=False)
+        dqconfig = AutoQuantizationConfig.avx512(is_static=False, per_channel=False)
         model_quantized_path2 = quantizer.quantize(
             save_dir=model_quantized_path,
             quantization_config=dqconfig,
@@ -447,20 +447,30 @@ class DiplomaTrainer():
         model_quantized_path = f'../saved_onnx/{output_dir}'
         quantizer = ORTQuantizer.from_pretrained(f'../saved_onnx/AVX512/{folder}/')
 
-        dqconfig = AutoQuantizationConfig.avx512_vnni(
+        dqconfig = AutoQuantizationConfig.avx512(
             is_static=True,
             per_channel=False,
-            use_symmetric_activations=True,
+            use_symmetric_activations=False,
             operators_to_quantize=['MatMul', 'Gemm']
         )
 
         input_ids_list = []
         attention_mask_list = []
+        
+        # FOR USING WITH MIN MAX
+        # for data in self.gen_data_reader(add_labels=False):
+        #     input_ids = data['input_ids'].squeeze(0)
+        #     attention_mask = data['attention_mask'].squeeze(0)
+            
+        #     input_ids_list.append(input_ids)
+        #     attention_mask_list.append(attention_mask)
 
         for data in self.gen_data_reader(add_labels=False):
             input_ids = data['input_ids'].squeeze(0)
             attention_mask = data['attention_mask'].squeeze(0)
-            
+            input_ids = np.pad(input_ids, (0, 90 - input_ids.shape[0]), 'constant')
+            attention_mask = np.pad(attention_mask, (0, 90 - attention_mask.shape[0]), 'constant')
+
             input_ids_list.append(input_ids)
             attention_mask_list.append(attention_mask)
             
@@ -473,13 +483,18 @@ class DiplomaTrainer():
         print('Calibration dataset shape check:')
         print(f"input_ids: {type(calibration_dataset['input_ids'])}")  # Should be (seq_len,)
         print(f"attention_mask: {type(calibration_dataset['attention_mask'])}")
+        
+         
+        calibration_config = AutoCalibrationConfig.percentiles(calibration_dataset)
 
-        calibration_config = AutoCalibrationConfig.minmax(calibration_dataset)
+        start_time = time.time()
         ranges = quantizer.fit(
             dataset=calibration_dataset,
             calibration_config=calibration_config,
             operators_to_quantize=dqconfig.operators_to_quantize,
         )
+        end_time = time.time()
+        print("Time used for calibration: ", end_time - start_time)
         
         quantizer.quantize(
             calibration_tensors_range=ranges,

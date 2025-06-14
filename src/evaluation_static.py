@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
 dataDiploma = DiplomaDataset('./data/train.csv', './data/test.csv', tokenizer=tokenizer)
-filename='results_static_log_loss_3000.txt'
+filename='results_static_log_loss_3000_2.txt'
 results = {}
 
 num_training_examples = 3000
@@ -13,7 +13,7 @@ epochs = 3
 for i in range(2, 15):
     graph_name = f'BERT_C{i}'
     print(graph_name)
-    examples_calibration = int(4000 / i)
+    examples_calibration = int(1000 / i)
     test_calibration = int(2000 / i)
 
     dataLoader_calib, dataLoader_test = dataDiploma.prepare_data(num_examples_train=examples_calibration, num_examples_test=test_calibration, class_count=i)
@@ -25,7 +25,7 @@ for i in range(2, 15):
 
     trainer.quantize_static_avx512('static_quant', i)
     cur_result = trainer.evaluation_onnx(f'static_quant/{cur_model_onnx_name_quantized}')
-
+    print("Results: ", cur_result)
     variance = (len(cur_result['probabilities']) - cur_result['probabilities'].sum() ) / len(cur_result['probabilities'])
     log_loss = cur_result['log_loss'].mean()
 
@@ -42,3 +42,8 @@ with open(filename, "+r") as f:
 results = eval(data)
 plt.bar(results.keys(), results.values())
 plt.show()  
+
+
+
+# Time used for calibration:  94.52620840072632 4000 examples
+# Time used for calibration:  135.85733938217163 6000 examples
