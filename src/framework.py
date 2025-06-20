@@ -36,6 +36,16 @@ class DiplomaTrainer():
     BASE_PATH_ONNX = '../saved_onnx/'
 
     def __init__(self, model, train_dataloader, test_dataloader, device="cuda" if torch.cuda.is_available() else "cpu"):
+    def __init__(self, model, train_dataloader, test_dataloader, device=None):
+        if device is None:
+            if torch.backends.mps.is_available():
+                self.device = "mps"
+            elif torch.cuda.is_available():
+                self.device = "cuda"
+            else:
+                self.device = "cpu"
+        else:
+            self.device = device
         self.model = model
         self.model_static_q = None
         self.model_dynamic_q = None

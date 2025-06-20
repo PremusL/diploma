@@ -5,12 +5,14 @@ tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 dataDiploma = DiplomaDataset('./data/train.csv', './data/test.csv', tokenizer=tokenizer)
 dataLoader_calib, dataLoader_test = dataDiploma.prepare_data(num_examples_train=2500, num_examples_test=400, class_count=2)
 model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=2)
-config = BertModel.from_pretrained('bert-base-uncased').config
+# config = BertModel.from_pretrained('bert-base-uncased').config
 trainer = DiplomaTrainer(model, dataLoader_calib, dataLoader_test, device='cpu')
-trainer.load_model('../saved_models/bert_2000_C2_E3_test')
+trainer.load_model('../saved_models/BERT_3000_C2_E3')
 
-name_base = 'bert_2000_C2_E3_test.onnx'
-name_inffered = 'bert_2000_C2_E3_inferred.onnx'
+cur_model = list(trainer.model.state_dict().keys())
+
+name_base = 'BERT_3000_C2_E3.onnx'
+name_inffered = 'BERT_3000_C2_E3_inferred.onnx'
 name_dynamic = 'bert_dynamic.onnx'
 name_static = 'bert_static.onnx'
 name_static2 = 'AVX512_quantized'
@@ -18,23 +20,39 @@ name_static2 = 'AVX512_quantized'
 
 trainer.onnx_export(name_base)
 
-# trainer.onnx_check_model(name_base)
 
-# trainer.quantize_static_avx512(name_base, name_static2)
-# print('Dynamic new:')
-# res_base = trainer.evaluation_onnx(f'{name_static2}/bert_2000_C2_E3_test_quantized.onnx')
+
+
+
+
+
 
 trainer.symbolic_shape_inference(name_base, name_inffered) 
-trainer.onnx_quantize_static(name_inffered, name_static)
-# trainer.onnx_quantize_dynamic(name_inffered, name_dynamic)
+# trainer.onnx_quantize_static(name_inffered, name_static)
+trainer.onnx_quantize_dynamic(name_inffered, name_dynamic)
 
-# print('Base old:')
-# res_base = trainer.evaluation_onnx(name_base)
-# print('Dynamic old:')
-# res_dynamic = trainer.evaluation_onnx(name_dynamic)
-print('Static old:')
-res_static = trainer.evaluation_onnx(name_static)
-# print(f'Base: {acc_base}, Static: {acc_static}, Dynamic: {acc_dynamic}')
+
+# Path to your ONNX models
+onnx_original_path = trainer.BASE_PATH_ONNX + name_inffered # Or your base ONNX model
+onnx_dynamic_quantized_path = trainer.BASE_PATH_ONNX + name_dynamic
+# onnx_dynamic_quantized_path = trainer.BASE_PATH_ONNX + name_dynamic # If you use dynamic ONNX quantization
+
+# Before ONNX quantization
+print(f"\n--- Weights from Original ONNX model: {onnx_original_path} ---")
+# Replace 'bert.encoder.layer.0.attention.self.query.weight' with the actual tensor name in your ONNX model.
+# You might need to inspect the ONNX graph to find the exact names if they differ from PyTorch keys.
+print_onnx_model_weights(onnx_original_path, 'bert.encoder.layer.0.attention.self.query.weight')
+
+
+# After ONNX static quantization
+print(f"\n--- Weights from Dynamically Quantized ONNX model: {onnx_dynamic_quantized_path} ---")
+# The tensor name might change after quantization (e.g., to include _quant suffix or refer to q/dq nodes)
+# You'll likely need to inspect the quantized ONNX model to find the correct tensor name.
+# Common patterns for quantized weights:
+# - The original name if weights are stored dequantized.
+# - A name like 'bert.encoder.layer.0.attention.self.query.weight_quantized' or similar.
+# - Or, you might need to look for the initializer that feeds into a QLinearMatMul or MatMulInteger node.
+print_onnx_model_weights(onnx_dynamic_quantized_path, 'bert.encoder.layer.0.attention.self.query.bias') # Adjust tensor name as needed
 
 
 
@@ -43,8 +61,8 @@ res_static = trainer.evaluation_onnx(name_static)
 # trainer.print_quantized_modules(name_static)
 
 # trainer.print_model_size_onnx(name_base)
-trainer.print_model_size_onnx(name_static)
-# trainer.print_model_size_onnx(name_dynamic)
+# trainer.print_model_size_onnx(name_static)
+trainer.print_model_size_onnx(name_dynamic)
 # print("-----------------------------------------")
 # trainer.print_model_size_onnx(name_base)
 # trainer.print_model_size_onnx(name_static)

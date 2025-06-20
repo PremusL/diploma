@@ -6,12 +6,11 @@ import math
 
 
 class ContentDataset(Dataset):
-    def __init__(self, data, labels, tokenizer, max_length=90, batch_size=24):
+    def __init__(self, data, labels, tokenizer, max_length=90):
         self.data = data
         self.labels = labels
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.batch_size = batch_size
     
     def __len__(self):
         return len(self.data) 
