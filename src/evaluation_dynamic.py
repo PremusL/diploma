@@ -4,18 +4,17 @@ import matplotlib.pyplot as plt
 tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
 dataDiploma = DiplomaDataset('./data/train.csv', './data/test.csv', tokenizer=tokenizer)
-filename='results_dynamic_log_loss_3000.txt'
 results = {}
 
-num_training_examples = 3000
+num_training_examples = 5000
 epochs = 3
+test_size = 2000
+filename = f"log_loss_{num_training_examples}train_{test_size}test_dynamic.txt"
 
 for i in range(2, 15):
     graph_name = f'BERT_C{i}'
     print(graph_name)
-    examples_calibration = int(4000 / i)
-    test_size = int(2000 / i)
-
+    examples_calibration = 0
     dataLoader_calib, dataLoader_test = dataDiploma.prepare_data(num_examples_train=examples_calibration, num_examples_test=test_size, class_count=i)
     trainer = DiplomaTrainer(None, dataLoader_calib, dataLoader_test, device='cpu')
     trainer.load_model(f'../saved_models/BERT_{num_training_examples}_C{i}_E{epochs}')

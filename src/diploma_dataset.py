@@ -68,6 +68,7 @@ class DiplomaDataset():
 
     def select_examples(self, data, num_all, class_count):
         num_examples = math.ceil(num_all / class_count)
+        print(f"For each class there have been selected {num_examples} examples.")
         output_data = pd.DataFrame()
         
         for i in range(class_count):

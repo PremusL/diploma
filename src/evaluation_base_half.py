@@ -5,13 +5,17 @@ tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
 dataDiploma = DiplomaDataset('./data/train.csv', './data/test.csv', tokenizer=tokenizer)
 
-num_training_examples = 3000
+num_training_examples = 5000
+test_size = 2000
 epochs = 3
+
+filename = f"log_loss_{num_training_examples}train_{test_size}test_base.txt"
+
 
 results = {}
 for i in range(2, 15):
     graph_name = f'BERT_C{i}'
-    test_size = int(2000 / i)
+
     dataLoader_calib, dataLoader_test = dataDiploma.prepare_data(num_examples_train=None, num_examples_test=test_size, class_count=i)
     trainer = DiplomaTrainer(None, dataLoader_calib, dataLoader_test)
     trainer.load_model(f'../saved_models/BERT_{num_training_examples}_C{i}_E{epochs}')
@@ -27,11 +31,11 @@ for i in range(2, 15):
     results[graph_name] = log_loss
 
 
-with open('results_half_log_loss_3000.txt', "+w") as f:
+with open(filename, "+w") as f:
     f.write(str(results))
 
 data = ""
-with open('results_half_log_loss_3000.txt', "+r") as f:
+with open(filename, "+r") as f:
     data = f.readline()
 
 results = eval(data)
