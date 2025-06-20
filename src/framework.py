@@ -447,10 +447,10 @@ class DiplomaTrainer():
         quantizer = ORTQuantizer.from_pretrained(f'../saved_onnx/AVX512/{folder}/')
 
         dqconfig = AutoQuantizationConfig.avx512(is_static=False, per_channel=False)
+        dqconfig = AutoQuantizationConfig.avx512(is_static=False, per_channel=False, operators_to_quantize=['MatMul', 'Gemm'])
         model_quantized_path2 = quantizer.quantize(
             save_dir=model_quantized_path,
-            quantization_config=dqconfig,
-
+            quantization_config=dqconfig
         )
 
     def quantize_static_avx512(self, output_dir, folder):
