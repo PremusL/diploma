@@ -26,7 +26,7 @@ for i in range(2, 15):
     cur_result = trainer.evaluation_onnx(f'dynamic_quant/{cur_model_onnx_name_quantized}')
 
     variance = (len(cur_result['probabilities']) - cur_result['probabilities'].sum() ) / len(cur_result['probabilities'])
-    log_loss = cur_result['log_loss'].mean()
+    log_loss = float(cur_result['log_loss'].astype('float32').mean())
 
     results[graph_name] = log_loss
 
